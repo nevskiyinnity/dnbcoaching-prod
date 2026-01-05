@@ -114,4 +114,32 @@ To test locally on your machine:
     *   *Note*: The production server serves the built frontend from `dist/`.
     *   *Alternative*: For **hot-reloading**, run two terminals:
         1.  Start Backend: `node server/index.js`
-        2.  Start Frontend: `npm run dev` (Runs on port 8080, proxies API to 3000)
+
+## 7. Auto-Deploy (GitHub Actions)
+
+I have set up a workflow that automatically updates your server whenever you push code to GitHub.
+
+### Step 1: Generate SSH Key (On Your Machine)
+If you don't have a deploy key yet, generate a new pair (do not add a passphrase for automation purposes):
+```bash
+ssh-keygen -t ed25519 -C "github-actions" -f ~/.ssh/github_actions
+```
+
+### Step 2: Add Public Key to Server
+Copy the content of `~/.ssh/github_actions.pub` and add it to your server's authorized keys:
+```bash
+# On your server:
+nano ~/.ssh/authorized_keys
+# Paste the public key content on a new line, save and exit.
+```
+
+### Step 3: Add Secrets to GitHub
+1. Go to your GitHub Repository -> **Settings**.
+2. Go to **Secrets and variables** -> **Actions** -> **New repository secret**.
+3. Add the following secrets:
+    - `HOST`: Your server's IP address (e.g., `123.45.67.89`).
+    - `USERNAME`: Your server username (e.g., `root` or `ubuntu`).
+    - `KEY`: The **Private Key** (content of `~/.ssh/github_actions` from Step 1).
+
+### Step 4: Test
+Push a change to the `main` branch. Go to the **Actions** tab in GitHub to watch it deploy automatically!
