@@ -7,7 +7,8 @@
     "node": "20.x"
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"npm run start\" \"npm run dev:ui\"",
+    "dev:ui": "vite",
     "build": "vite build",
     "start": "node server/index.js",
     "build:dev": "vite build --mode development",
@@ -90,5 +91,8 @@
     "vaul": "^0.9.9",
     "vite": "^7.1.9",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

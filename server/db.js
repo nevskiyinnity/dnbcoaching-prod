@@ -17,9 +17,22 @@ db.exec(`
     name TEXT NOT NULL,
     code TEXT NOT NULL UNIQUE,
     expiryDate TEXT,
-    createdAt TEXT NOT NULL
+    createdAt TEXT NOT NULL,
+    data TEXT
   )
 `);
+
+// Migration: Add data column if missing (for existing dbs)
+try {
+    const columns = db.prepare('PRAGMA table_info(users)').all();
+    const hasData = columns.some(c => c.name === 'data');
+    if (!hasData) {
+        db.exec('ALTER TABLE users ADD COLUMN data TEXT');
+        console.log('Migrated DB: Added data column');
+    }
+} catch (e) {
+    console.error('Migration error:', e);
+}
 
 export function getAllUsers() {
     return db.prepare('SELECT * FROM users').all();
@@ -30,8 +43,8 @@ export function getUserByCode(code) {
 }
 
 export function addUser(user) {
-    const stmt = db.prepare('INSERT INTO users (id, name, code, expiryDate, createdAt) VALUES (?, ?, ?, ?, ?)');
-    stmt.run(user.id, user.name, user.code, user.expiryDate, user.createdAt);
+    const stmt = db.prepare('INSERT INTO users (id, name, code, expiryDate, createdAt, data) VALUES (?, ?, ?, ?, ?, ?)');
+    stmt.run(user.id, user.name, user.code, user.expiryDate, user.createdAt, user.data || '{}');
 }
 
 export function updateUser(id, updates) {
@@ -48,6 +61,12 @@ export function updateUser(id, updates) {
         values.push(updates.expiryDate);
     }
 
+    // Allow updating data directly via this method if needed, but updateUserData is preferred
+    if (updates.data !== undefined) {
+        fields.push('data = ?');
+        values.push(typeof updates.data === 'string' ? updates.data : JSON.stringify(updates.data));
+    }
+
     if (fields.length === 0) return true;
 
     values.push(id);
@@ -62,9 +81,41 @@ export function deleteUser(id) {
     return info.changes > 0;
 }
 
+export function getUserData(code) {
+    const user = getUserByCode(code);
+    if (!user || !user.data) return null;
+    try {
+        return JSON.parse(user.data);
+    } catch {
+        return {};
+    }
+}
+
+export function updateUserData(code, data) {
+    const user = getUserByCode(code);
+    if (!user) return false;
+    const str = JSON.stringify(data);
+    const stmt = db.prepare('UPDATE users SET data = ? WHERE code = ?');
+    const info = stmt.run(str, code);
+    return info.changes > 0;
+}
+
 export function isCodeValid(code) {
     const clean = (code || '').trim().toUpperCase();
     if (!clean) return { valid: false, reason: 'Invalid code' };
+
+    // Hardcoded dev code
+    if (clean === 'DEVELOPMENTTESTING') {
+        return {
+            valid: true,
+            user: {
+                id: 'dev-user',
+                name: 'Dev Tester',
+                code: 'DEVELOPMENTTESTING',
+                expiryDate: null
+            }
+        };
+    }
 
     const user = getUserByCode(clean);
     if (!user) return { valid: false, reason: 'Invalid code' };

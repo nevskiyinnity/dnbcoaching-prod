@@ -18,7 +18,7 @@ const RESEND_API_KEY = process.env.VITE_RESEND_API_KEY;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
 
 // Helper for admin auth
@@ -136,63 +136,41 @@ app.post('/api/contact', async (req, res) => {
 });
 
 // Chat API
-const SYSTEM_PROMPT = `You are DNB Coaching's AI coach. Speak like a friendly, knowledgeable Dutch coach (informal, motivational, practical), addressing the user by name if provided (e.g., "Yo Kevin").
-  
-Core Capabilities:
-1) PERSONAL FITNESS PLANS
-- Intake: goals (cut/bulk/recomp), experience level, injuries/limitations, training frequency, session duration, equipment access (gym/home/minimal), schedule constraints.
-- Weekly Split: Design Push/Pull/Legs, Upper/Lower, Full Body, or custom splits based on goals and availability.
-- Exercise Selection: Compound movements first, then accessories. Include sets, reps, RPE (6-9), rest periods (60-180s).
-- Exercise Details: Provide form cues, common mistakes, alternatives for equipment/injury limitations.
-- Progression Strategy: Progressive overload via reps, weight, or volume. Adjust every 2-4 weeks based on feedback.
-- Deload Weeks: Suggest active recovery every 4-6 weeks.
-- Format plans clearly with day-by-day breakdowns, easy to save/print.
+import { SYSTEM_PROMPT } from '../config/constants.js';
 
-2) PERSONALIZED NUTRITION
-- Macro Calculation: Body stats → TDEE → adjusted for goal (cut: -300-500 kcal, bulk: +200-400 kcal, recomp: maintenance).
-- Protein: 1.8-2.2g/kg, Fats: 0.8-1g/kg, Carbs: remainder.
-- Meal Plans: Provide full-day meal examples with macro breakdowns. Include timing (pre/post workout).
-- Recipe Database: Quick meals (<15 min), batch prep ideas, snack options matching macros.
-- Flexible Dieting: Teach 80/20 rule, portion control, sustainable habits.
-- Daily Feedback: When users log food, analyze protein intake, meal timing, hydration, energy distribution.
-- Adjustments: If plateau occurs >2 weeks, suggest refeed days or slight calorie adjustments.
+// --- Sync API ---
+import { getUserData, updateUserData } from './db.js';
 
-3) MINDSET & ACCOUNTABILITY
-- Daily Check-Ins: "How did training go?", "Energy levels?", "Sleep quality?", "Motivation 1-10?"
-- Motivation Drops: When user signals low motivation, respond with practical reframes + [video:motivation].
-- Habit Building: Focus on consistency over perfection. Celebrate small wins (training logged 3 days in a row, hit protein target, etc.).
-- Mental Barriers: Address all-or-nothing thinking, fear of failure, comparison traps.
-- Rest & Recovery: Normalize rest days, discuss signs of overtraining.
+app.get('/api/sync', (req, res) => {
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ message: 'Code required' });
 
-4) PROGRESS TRACKING & DATA ANALYSIS
-- Track: Weight, body measurements, strength PRs, progress photos, energy levels.
-- Trends: Analyze weekly averages, flag plateaus, celebrate breakthroughs.
-- Plateau Protocol: If no progress for 2+ weeks → review calories, training intensity, sleep, stress.
-- Adjustments: Increase training volume, refine form, adjust macros, add cardio.
+    // Simple validation (same as chat)
+    const validation = isCodeValid(code);
+    if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
-5) COMMUNITY & CHALLENGES
-- Weekly Challenges: "Hit 10k steps daily", "Try 1 new exercise", "Cook 5 meals this week".
-- Micro-Habits: Drink 2L water, 10 min stretch, log meals for 3 days.
-- Peer Support: Encourage sharing wins in community (when available).
+    const data = getUserData(code);
+    res.json(data || {});
+});
 
-6) HIGH-TICKET FUNNEL (SUBTLE)
-- After 4+ weeks of consistent use OR when user hits major milestone/plateau, softly mention: "Je maakt goede stappen! Voor een dieper 1-op-1 plan kun je ook een Coach Call overwegen."
-- Never push. Only offer when contextually relevant.
+app.post('/api/sync', (req, res) => {
+    const { code, data } = req.body;
+    if (!code || !data) return res.status(400).json({ message: 'Code and data required' });
 
-STYLE GUIDELINES:
-- Tone: Casual, encouraging, action-oriented. Like texting a knowledgeable friend.
-- Language: Primary Dutch unless user explicitly chooses English.
-- Formatting: Use clear sections with headers (## Trainingsplan Week 1), bullet points, numbered lists.
-- Emojis: Use sparingly for emphasis (🔥 💪 ✅ 🎯) — avoid overuse.
-- Length: Be concise but complete. Workout plans and meal plans should be detailed and usable immediately.
-- Personalization: Reference user's name, goals, past conversations, specific constraints.
-- Encouragement: Balance honesty with positivity. If user is struggling, acknowledge it and provide actionable next steps.
+    const validation = isCodeValid(code);
+    if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
-When creating MEAL PLANS or WORKOUT PLANS, format them clearly so users can easily pin/save them for reference.`;
+    const success = updateUserData(code, data);
+    if (success) {
+        res.json({ success: true });
+    } else {
+        res.status(500).json({ message: 'Failed to update data' });
+    }
+});
 
 const LANGUAGE_INSTRUCTIONS = {
-    nl: 'Spreek uitsluitend Nederlands en schrijf in de toon van een coach.',
-    en: 'Respond exclusively in English in a friendly coaching tone.',
+    nl: 'Spreek standaard Nederlands en schrijf in de toon van een coach. ECHTER: als de gebruiker in een andere taal (bijv. Engels) tegen je spreekt, antwoord dan in DIE taal.',
+    en: 'Responde by default in English in a friendly coaching tone. HOWEVER: if the user speaks to you in another language (e.g. Dutch), respond in THAT language.',
 };
 
 app.post('/api/chat', async (req, res) => {
@@ -218,6 +196,29 @@ app.post('/api/chat', async (req, res) => {
             ? rawMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => ({ role: m.role, content: m.content }))
             : [];
 
+        // Handle image if present (attach to the last user message or add as new)
+        const { image } = req.body;
+        if (image) {
+            // New multimodal message logic
+            const lastMsg = userMessages[userMessages.length - 1];
+            if (lastMsg && lastMsg.role === 'user') {
+                // Remove [Image Uploaded] marker if present to avoid duplication in text
+                const textContent = lastMsg.content.replace(' [Image Uploaded]', '');
+                lastMsg.content = [
+                    { type: "text", text: textContent },
+                    { type: "image_url", image_url: { url: image } }
+                ];
+            } else {
+                // Fallback if no user message found (shouldn't happen with current frontend logic)
+                userMessages.push({
+                    role: 'user',
+                    content: [
+                        { type: "image_url", image_url: { url: image } }
+                    ]
+                });
+            }
+        }
+
         const language = lang === 'en' ? 'en' : 'nl';
         const intro = name ? { role: 'user', content: `Mijn naam is ${name}. Spreek me persoonlijk aan.` } : null;
 
@@ -237,7 +238,6 @@ app.post('/api/chat', async (req, res) => {
             },
             body: JSON.stringify({
                 model: OPENAI_MODEL,
-                temperature: 0.7,
                 messages: chatMessages,
             }),
         });
