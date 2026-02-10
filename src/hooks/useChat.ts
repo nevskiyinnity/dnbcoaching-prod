@@ -219,6 +219,7 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
         pinnedBlocks,
         togglePin,
         isPinned: (id: string) => pinnedMessages.includes(id),
-        synced // Expose synced state
+        synced, // Expose synced state
+        userData // Expose raw user data for system checks
     };
 }

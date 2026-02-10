@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config'; // Load .env file
 import { Resend } from 'resend';
-import { getAllUsers, addUser, updateUser, deleteUser, generateCode, isCodeValid, deleteAllUsers } from './db.js';
+import { getAllUsers, addUser, updateUser, deleteUser, generateCode, isCodeValid, getSetting, updateSetting } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,16 +20,6 @@ const RESEND_API_KEY = process.env.VITE_RESEND_API_KEY;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
-
-// Debug Middleware
-app.use((req, res, next) => {
-    console.log(`[DEBUG] ${req.method} ${req.url}`, {
-        headers: req.headers,
-        bodyType: typeof req.body,
-        body: req.body
-    });
-    next();
-});
 
 // Helper for admin auth
 const checkAdminAuth = (req, res, next) => {
@@ -110,8 +100,8 @@ app.delete('/api/admin/users', checkAdminAuth, (req, res) => {
 
 app.post('/api/admin/users/reset', checkAdminAuth, (req, res) => {
     try {
-        const count = deleteAllUsers();
-        res.json({ success: true, count });
+        updateSetting('min_auth_ts', Date.now());
+        res.json({ success: true, message: 'All sessions invalidated (timestamp update)' });
     } catch (e) {
         res.status(500).json({ message: e.message });
     }
@@ -169,6 +159,12 @@ app.get('/api/sync', (req, res) => {
     if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
     const data = getUserData(code);
+    // Inject system settings
+    if (data) {
+        data.__sys = {
+            minAuth: getSetting('min_auth_ts', 0)
+        };
+    }
     res.json(data || {});
 });
 

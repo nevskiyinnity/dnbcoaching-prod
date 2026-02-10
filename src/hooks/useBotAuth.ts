@@ -36,6 +36,7 @@ export function useBotAuth() {
 
             localStorage.setItem("bot_user_code", code.trim());
             localStorage.setItem("bot_user_name", returnedName);
+            localStorage.setItem("bot_login_ts", Date.now().toString());
 
             setUserCode(code.trim());
             setDbName(returnedName);
@@ -55,6 +56,7 @@ export function useBotAuth() {
         localStorage.removeItem("bot_gamification");
         localStorage.removeItem("bot_history_v2");
         localStorage.removeItem("bot_pins");
+        localStorage.removeItem("bot_login_ts");
 
         setUserCode("");
         setDbName("");

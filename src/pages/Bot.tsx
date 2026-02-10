@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sparkles, Pin, X } from "lucide-react";
+import { toast } from "sonner";
 import { LoginScreen } from "@/components/chat/LoginScreen";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatBubble } from "@/components/chat/ChatBubble";
@@ -64,11 +65,23 @@ export default function Bot() {
     togglePin,
     isPinned,
     synced, // Get synced state from useChat
+    userData,
   } = useChat(userCode, effectiveName, lang);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [assistantBlocks, loading]);
+
+  // Session Invalidation Check
+  useEffect(() => {
+    if (authenticated && userData?.__sys?.minAuth) {
+      const loginTs = parseInt(localStorage.getItem('bot_login_ts') || '0', 10);
+      if (userData.__sys.minAuth > loginTs) {
+        toast.error("Session expired. Please log in again.");
+        logout();
+      }
+    }
+  }, [userData, authenticated, logout]);
 
   if (!authenticated) {
     return <LoginScreen onLogin={login} />;

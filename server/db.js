@@ -146,7 +146,22 @@ export function generateCode() {
     return code; // Fallback
 }
 
-export function deleteAllUsers() {
-    const stmt = db.prepare('DELETE FROM users');
-    return stmt.run().changes;
+// --- Settings for System-wide controls ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )
+`);
+
+export function getSetting(key, defaultValue = null) {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    return row ? JSON.parse(row.value) : defaultValue;
+}
+
+export function updateSetting(key, value) {
+    const str = JSON.stringify(value);
+    const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+    stmt.run(key, str);
+    return true;
 }
