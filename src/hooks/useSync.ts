@@ -1,11 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 
 export function useSync(userCode: string | null) {
     const [synced, setSynced] = useState(false);
     const [userData, setUserData] = useState<any>({});
 
-    // 1. Down-Sync: Load from server, merge with local
+    // Use a ref to keep track of the latest userData without triggering re-renders or stale closures in callbacks
+    const userDataRef = useRef<any>({});
+
+    // Update ref when state changes (from down-sync)
+    useEffect(() => {
+        userDataRef.current = userData;
+    }, [userData]);
+
+    // 1. Down-Sync: Load from server
     useEffect(() => {
         if (!userCode) return;
 
@@ -16,6 +24,7 @@ export function useSync(userCode: string | null) {
                 const serverData = await res.json();
 
                 setUserData(serverData);
+                userDataRef.current = serverData; // Update ref immediately
 
                 // Persist server data to local storage for offline access/hooks
                 if (serverData.gamification) {
@@ -36,41 +45,30 @@ export function useSync(userCode: string | null) {
         syncDown();
     }, [userCode]);
 
-    // 2. Up-Sync: Update one key, merge, save to server
+    // 2. Up-Sync: Update one key, merge with CURRENT ref data, save to server
     const syncUp = useCallback(async (key: string, value: any) => {
         if (!userCode) return;
 
         try {
+            // Get latest data from ref to avoid stale closures
+            const currentData = userDataRef.current;
+            const newData = { ...currentData, [key]: value };
+
             // Optimistic update locally
-            setUserData((prev: any) => {
-                const newData = { ...prev, [key]: value };
-                return newData;
-            });
-
-            // Fetch latest to be safe? Or just use what we have. 
-            // For now, simple read-modify-write relative to our current known state.
-            // Note: This isn't atomic, but sufficient for single-user context.
-
-            // Re-read current internal state is tricky inside async without ref. 
-            // We will use the functional update pattern concept, but for the API call 
-            // we need the PREVIOUS data combined with NEW.
-
-            // Let's assume 'userData' state is reasonably fresh.
-            // Better: We fetch current, merge, save.
-
-            let payload = { ...userData, [key]: value };
+            setUserData(newData);
+            userDataRef.current = newData; // Update ref
 
             // Send to server
             await fetch('/api/sync', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code: userCode, data: payload })
+                body: JSON.stringify({ code: userCode, data: newData })
             });
 
         } catch (e) {
             console.error('Sync up error:', e);
         }
-    }, [userCode, userData]);
+    }, [userCode]); // Removed userData dependency to avoid recreation on every state change
 
     return { synced, userData, syncUp };
 }

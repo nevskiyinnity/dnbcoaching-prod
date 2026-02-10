@@ -42,6 +42,13 @@ function parseBlocks(text: string): MessageBlock[] {
 }
 
 
+
+function isSameDay(d1: Date, d2: Date) {
+    return d1 && d2 && d1.getFullYear() === d2.getFullYear() &&
+        d1.getMonth() === d2.getMonth() &&
+        d1.getDate() === d2.getDate();
+}
+
 export function useChat(userCode: string | null, userName: string, lang: 'nl' | 'en') {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [loading, setLoading] = useState(false);
@@ -68,84 +75,91 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
         if (savedPins) setPinnedMessages(JSON.parse(savedPins));
     }, []);
 
-    const saveToHistory = useCallback((newMessages: ChatMessage[]) => {
-        // 1. Local Save
-        localStorage.setItem("bot_history_v2", JSON.stringify(newMessages));
-        setMessages(newMessages);
-
-        // 2. Cloud Save
-        syncUp('chatHistory', newMessages);
-    }, [syncUp]);
-
     // Auto-Gamification Logic
     const updateGamification = useCallback(() => {
-        const stored = localStorage.getItem('bot_gamification');
-        let stats = stored ? JSON.parse(stored) : { streak: 0, score: 0, badges: 0, lastActive: null };
+        try {
+            const stored = localStorage.getItem('bot_gamification');
+            let stats = stored ? JSON.parse(stored) : { streak: 0, score: 0, badges: 0, lastActive: null };
 
-        const now = new Date();
-        const last = stats.lastActive ? new Date(stats.lastActive) : null;
+            const now = new Date();
+            const last = stats.lastActive ? new Date(stats.lastActive) : null;
 
-        let newStreak = stats.streak;
-        let newScore = stats.score;
+            let newStreak = stats.streak;
+            let newScore = stats.score;
 
-        if (!last) {
-            newStreak = 1;
-            newScore += 10;
-        } else if (isSameDay(now, last)) {
-            // Already active today, just add small score
-            newScore += 1; // Small XP for continued chatting
-        } else {
-            // Different day
-            const yesterday = new Date();
-            yesterday.setDate(now.getDate() - 1);
-
-            if (isSameDay(yesterday, last)) {
-                // Consecutive day
-                newStreak += 1;
-                newScore += 20 + (newStreak * 5); // Bonus for streak
-            } else {
-                // Streaks broken
+            // Valid Date check
+            if (!last || isNaN(last.getTime())) {
+                // reset if invalid
                 newStreak = 1;
                 newScore += 10;
+            } else if (isSameDay(now, last)) {
+                // Already active today, just add small score
+                newScore += 1; // Small XP for continued chatting
+            } else {
+                // Different day
+                const yesterday = new Date();
+                yesterday.setDate(now.getDate() - 1);
+
+                if (isSameDay(yesterday, last)) {
+                    // Consecutive day
+                    newStreak += 1;
+                    newScore += 20 + (newStreak * 5); // Bonus for streak
+                } else {
+                    // Streaks broken
+                    newStreak = 1;
+                    newScore += 10;
+                }
             }
+
+            const newStats = { ...stats, streak: newStreak, score: newScore, lastActive: now.toISOString() };
+
+            // Save
+            localStorage.setItem('bot_gamification', JSON.stringify(newStats));
+            syncUp('gamification', newStats);
+
+            // Trigger update for UI
+            window.dispatchEvent(new Event("storage"));
+        } catch (e) {
+            console.error("Error in gamification logic", e);
         }
-
-        const newStats = { ...stats, streak: newStreak, score: newScore, lastActive: now.toISOString() };
-
-        // Save
-        localStorage.setItem('bot_gamification', JSON.stringify(newStats));
-        syncUp('gamification', newStats);
-
-        // Trigger update for UI
-        window.dispatchEvent(new Event("storage"));
 
     }, [syncUp]);
 
     const send = async (text: string, image?: string) => {
         if (!text.trim() && !image) return;
 
-        // Create User Message
-        const userMsg: ChatMessage = {
-            role: "user",
-            content: text + (image ? " [Image Uploaded]" : ""),
-            id: Date.now().toString(),
-            blocks: parseBlocks(text + (image ? " [Image Uploaded]" : "")) // Use parseBlocks for user message too
-        };
-
-        const newHistory = [...messages, userMsg];
-        saveToHistory(newHistory);
-        updateGamification(); // AUTO-GAMIFICATION TRIGGER
-        setLoading(true);
+        setLoading(true); // Set loading immediately
 
         try {
+            // Create User Message
+            const userMsg: ChatMessage = {
+                role: "user",
+                content: text + (image ? " [Image Uploaded]" : ""),
+                id: Date.now().toString(),
+                blocks: parseBlocks(text + (image ? " [Image Uploaded]" : ""))
+            };
+
+            const newHistory = [...messages, userMsg];
+
+            // Optimistic update
+            setMessages(newHistory);
+            localStorage.setItem("bot_history_v2", JSON.stringify(newHistory));
+            syncUp('chatHistory', newHistory);
+
+            // Trigger gamification safely
+            try {
+                updateGamification();
+            } catch (e) {
+                console.error("Gamification update failed", e);
+            }
+
             // Prepare payload
-            // If we have an image, we send it separately or as part of the content logic we built in backend
             const payload = {
-                messages: newHistory.map(({ role, content }) => ({ role, content })), // Send only role and content to API
+                messages: newHistory.map(({ role, content }) => ({ role, content })),
                 code: userCode,
                 name: userName,
                 lang,
-                image: image // Send image to backend if present
+                image: image
             };
 
             const res = await fetch("/api/chat", {
@@ -159,7 +173,6 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
             const data = await res.json();
             const assistantText = data.message;
 
-            // Parse Blocks (Video detection)
             const blocks: MessageBlock[] = parseBlocks(assistantText);
 
             const assistantMsg: ChatMessage = {
@@ -169,8 +182,13 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
                 id: (Date.now() + 1).toString()
             };
 
-            saveToHistory([...newHistory, assistantMsg]);
+            const finalHistory = [...newHistory, assistantMsg];
+            setMessages(finalHistory);
+            localStorage.setItem("bot_history_v2", JSON.stringify(finalHistory));
+            syncUp('chatHistory', finalHistory);
+
         } catch (err: any) {
+            console.error("Chat error:", err);
             toast.error("Error sending message: " + err.message);
         } finally {
             setLoading(false);
@@ -200,6 +218,7 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
         assistantBlocks, // Actually all displayable blocks
         pinnedBlocks,
         togglePin,
-        isPinned: (id: string) => pinnedMessages.includes(id)
+        isPinned: (id: string) => pinnedMessages.includes(id),
+        synced // Expose synced state
     };
 }

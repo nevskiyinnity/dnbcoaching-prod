@@ -9,7 +9,7 @@ import { VideoBlock } from "@/components/chat/VideoBlock";
 import { useBotAuth } from "@/hooks/useBotAuth";
 import { useChat } from "@/hooks/useChat";
 
-import { useSync } from "@/hooks/useSync";
+// import { useSync } from "@/hooks/useSync";
 
 // Default stats
 const DEFAULT_STATS = { streak: 0, badges: 0, score: 0 };
@@ -26,8 +26,8 @@ export default function Bot() {
     login
   } = useBotAuth();
 
-  // Sync Hook
-  const { synced, syncUp } = useSync(userCode);
+  // Sync Hook removed (handled inside useChat)
+  // const { synced, syncUp } = useSync(userCode);
 
   // Local Gamification State
   const [stats, setStats] = React.useState(() => {
@@ -61,7 +61,10 @@ export default function Bot() {
     assistantBlocks,
     pinnedBlocks,
     togglePin,
-    isPinned
+    pinnedBlocks,
+    togglePin,
+    isPinned,
+    synced, // Get synced state from useChat
   } = useChat(userCode, effectiveName, lang);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
