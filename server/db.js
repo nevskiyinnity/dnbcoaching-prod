@@ -5,21 +5,49 @@ const prisma = new PrismaClient();
 
 export { prisma };
 
+// --- User CRUD ---
+
 export async function getAllUsers() {
     return prisma.user.findMany();
 }
 
-export async function getUserByCode(code) {
-    return prisma.user.findUnique({ where: { code } });
+export async function getUserByClerkId(clerkId) {
+    if (!clerkId) return null;
+    return prisma.user.findUnique({ where: { clerkId } });
+}
+
+export async function getUserById(id) {
+    return prisma.user.findUnique({ where: { id } });
+}
+
+export async function upsertUserByClerkId(clerkId, data) {
+    return prisma.user.upsert({
+        where: { clerkId },
+        update: {
+            name: data.name,
+            email: data.email,
+            role: data.role,
+        },
+        create: {
+            id: data.id || clerkId,
+            clerkId,
+            name: data.name,
+            email: data.email || null,
+            role: data.role || 'user',
+            createdAt: data.createdAt || new Date().toISOString(),
+            data: '{}',
+        },
+    });
 }
 
 export async function addUser(user) {
     await prisma.user.create({
         data: {
             id: user.id,
+            clerkId: user.clerkId || null,
             name: user.name,
-            code: user.code,
-            expiryDate: user.expiryDate || null,
+            email: user.email || null,
+            role: user.role || 'user',
             createdAt: user.createdAt,
             data: user.data || '{}',
         },
@@ -33,8 +61,12 @@ export async function updateUser(id, updates) {
         data.name = updates.name;
     }
 
-    if (updates.expiryDate !== undefined) {
-        data.expiryDate = updates.expiryDate;
+    if (updates.email !== undefined) {
+        data.email = updates.email;
+    }
+
+    if (updates.role !== undefined) {
+        data.role = updates.role;
     }
 
     if (updates.data !== undefined) {
@@ -63,8 +95,20 @@ export async function deleteUser(id) {
     }
 }
 
-export async function getUserData(code) {
-    const user = await getUserByCode(code);
+export async function deleteUserByClerkId(clerkId) {
+    try {
+        await prisma.user.delete({ where: { clerkId } });
+        return true;
+    } catch (e) {
+        if (e.code === 'P2025') return false;
+        throw e;
+    }
+}
+
+// --- User Data (sync) ---
+
+export async function getUserDataByClerkId(clerkId) {
+    const user = await getUserByClerkId(clerkId);
     if (!user || !user.data) return null;
     try {
         return JSON.parse(user.data);
@@ -73,13 +117,13 @@ export async function getUserData(code) {
     }
 }
 
-export async function updateUserData(code, data) {
-    const user = await getUserByCode(code);
+export async function updateUserDataByClerkId(clerkId, data) {
+    const user = await getUserByClerkId(clerkId);
     if (!user) return false;
     const str = JSON.stringify(data);
     try {
         await prisma.user.update({
-            where: { code },
+            where: { clerkId },
             data: { data: str },
         });
         return true;
@@ -87,33 +131,6 @@ export async function updateUserData(code, data) {
         if (e.code === 'P2025') return false;
         throw e;
     }
-}
-
-export async function isCodeValid(code) {
-    const clean = (code || '').trim().toUpperCase();
-    if (!clean) return { valid: false, reason: 'Invalid code' };
-
-    const user = await getUserByCode(clean);
-    if (!user) return { valid: false, reason: 'Invalid code' };
-
-    if (user.expiryDate) {
-        const expiry = new Date(user.expiryDate);
-        const now = new Date();
-        if (now > expiry) {
-            return { valid: false, user, reason: 'Code expired' };
-        }
-    }
-
-    return { valid: true, user };
-}
-
-export function generateCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let code = '';
-    for (let i = 0; i < 8; i++) {
-        code += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return code;
 }
 
 // --- Settings for System-wide controls ---

@@ -1,43 +1,30 @@
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import { clerkMiddleware, getAuth } from '@clerk/express';
 
-function getJwtSecret() {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        throw new Error('JWT_SECRET environment variable is required');
-    }
-    return secret;
-}
-const JWT_EXPIRES_IN = '24h';
+// Clerk Express middleware — attach Clerk auth to all requests
+export const clerkAuth = clerkMiddleware();
 
-export async function hashPassword(password) {
-    return bcrypt.hash(password, 12);
-}
-
-export async function verifyPassword(password, hash) {
-    return bcrypt.compare(password, hash);
-}
-
-export function signToken(payload) {
-    return jwt.sign(payload, getJwtSecret(), { expiresIn: JWT_EXPIRES_IN });
-}
-
-export function verifyToken(token) {
-    return jwt.verify(token, getJwtSecret());
-}
-
+// Middleware to protect admin routes — requires an authenticated Clerk session
+// with the "admin" role stored in publicMetadata
 export function checkAdminAuth(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader?.startsWith('Bearer ')) {
-        return res.status(401).json({ message: 'Unauthorized' });
+    const auth = getAuth(req);
+
+    if (!auth || !auth.userId) {
+        return res.status(401).json({ message: 'Unauthorized — not signed in' });
     }
 
-    const token = authHeader.slice(7);
-    try {
-        const decoded = verifyToken(token);
-        req.admin = decoded;
-        next();
-    } catch {
-        return res.status(401).json({ message: 'Invalid or expired token' });
+    // For admin routes, we check sessionClaims for role
+    // Clerk publicMetadata.role === 'admin' is mapped into sessionClaims via Clerk Dashboard
+    const role = auth.sessionClaims?.metadata?.role || auth.sessionClaims?.publicMetadata?.role;
+    if (role !== 'admin') {
+        return res.status(403).json({ message: 'Forbidden — admin access required' });
     }
+
+    req.admin = { userId: auth.userId, role: 'admin' };
+    next();
+}
+
+// Helper to extract the authenticated Clerk userId from a request
+export function getClerkUserId(req) {
+    const auth = getAuth(req);
+    return auth?.userId || null;
 }

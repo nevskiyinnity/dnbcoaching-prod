@@ -12,8 +12,11 @@ const { mockUsers, mockSettings, mockPrisma } = vi.hoisted(() => {
         user: {
             findMany: vi.fn(() => Promise.resolve(Array.from(mockUsers.values()))),
             findUnique: vi.fn(({ where }) => {
-                if (where.code) {
-                    return Promise.resolve(mockUsers.get(where.code) || null);
+                if (where.clerkId) {
+                    for (const u of mockUsers.values()) {
+                        if (u.clerkId === where.clerkId) return Promise.resolve(u);
+                    }
+                    return Promise.resolve(null);
                 }
                 if (where.id) {
                     for (const u of mockUsers.values()) {
@@ -24,13 +27,15 @@ const { mockUsers, mockSettings, mockPrisma } = vi.hoisted(() => {
                 return Promise.resolve(null);
             }),
             create: vi.fn(({ data }) => {
-                mockUsers.set(data.code, { ...data });
+                mockUsers.set(data.id, { ...data });
                 return Promise.resolve(data);
             }),
             update: vi.fn(({ where, data }) => {
                 let user = null;
-                if (where.code) {
-                    user = mockUsers.get(where.code);
+                if (where.clerkId) {
+                    for (const u of mockUsers.values()) {
+                        if (u.clerkId === where.clerkId) { user = u; break; }
+                    }
                 } else if (where.id) {
                     for (const u of mockUsers.values()) {
                         if (u.id === where.id) { user = u; break; }
@@ -44,13 +49,37 @@ const { mockUsers, mockSettings, mockPrisma } = vi.hoisted(() => {
                 Object.assign(user, data);
                 return Promise.resolve(user);
             }),
+            upsert: vi.fn(({ where, update, create }) => {
+                let existing = null;
+                if (where.clerkId) {
+                    for (const u of mockUsers.values()) {
+                        if (u.clerkId === where.clerkId) { existing = u; break; }
+                    }
+                }
+                if (existing) {
+                    Object.assign(existing, update);
+                    return Promise.resolve(existing);
+                }
+                mockUsers.set(create.id, { ...create });
+                return Promise.resolve(create);
+            }),
             delete: vi.fn(({ where }) => {
                 let found = false;
-                for (const [code, u] of mockUsers.entries()) {
-                    if (u.id === where.id) {
-                        mockUsers.delete(code);
-                        found = true;
-                        break;
+                if (where.clerkId) {
+                    for (const [key, u] of mockUsers.entries()) {
+                        if (u.clerkId === where.clerkId) {
+                            mockUsers.delete(key);
+                            found = true;
+                            break;
+                        }
+                    }
+                } else if (where.id) {
+                    for (const [key, u] of mockUsers.entries()) {
+                        if (u.id === where.id) {
+                            mockUsers.delete(key);
+                            found = true;
+                            break;
+                        }
                     }
                 }
                 if (!found) {
@@ -95,178 +124,117 @@ vi.mock('fs', async () => {
 
 // Import the db functions under test
 import {
-    isCodeValid,
-    generateCode,
     addUser,
     getAllUsers,
     deleteUser,
-    getUserData,
-    updateUserData,
+    getUserByClerkId,
+    upsertUserByClerkId,
+    deleteUserByClerkId,
+    getUserDataByClerkId,
+    updateUserDataByClerkId,
     getSetting,
     updateSetting,
 } from '../server/db.js';
 
 // ---------------------------------------------------------------------------
-// Code validation (isCodeValid)
+// User CRUD (Clerk-based)
 // ---------------------------------------------------------------------------
-describe('isCodeValid', () => {
+describe('getUserByClerkId', () => {
     beforeEach(() => {
         mockUsers.clear();
         vi.restoreAllMocks();
     });
 
-    it('returns invalid for empty/null code', async () => {
-        expect((await isCodeValid('')).valid).toBe(false);
-        expect((await isCodeValid(null)).valid).toBe(false);
-        expect((await isCodeValid(undefined)).valid).toBe(false);
+    it('returns null for null/empty clerkId', async () => {
+        expect(await getUserByClerkId(null)).toBeNull();
+        expect(await getUserByClerkId('')).toBeNull();
     });
 
-    it('returns invalid when code does not exist in database', async () => {
-        const result = await isCodeValid('NONEXIST');
-        expect(result.valid).toBe(false);
-        expect(result.reason).toBe('Invalid code');
+    it('returns null when clerkId does not exist in database', async () => {
+        const result = await getUserByClerkId('user_nonexistent');
+        expect(result).toBeNull();
     });
 
-    it('returns valid for an existing, non-expired code', async () => {
+    it('returns user for an existing clerkId', async () => {
         mockPrisma.user.findUnique.mockResolvedValueOnce({
-            id: '1',
+            id: 'user_123',
+            clerkId: 'user_123',
             name: 'Test User',
-            code: 'VALIDCDE',
-            expiryDate: null,
+            email: 'test@example.com',
+            role: 'user',
             createdAt: new Date().toISOString(),
         });
 
-        const result = await isCodeValid('VALIDCDE');
-        expect(result.valid).toBe(true);
-        expect(result.user).toBeDefined();
-        expect(result.user.name).toBe('Test User');
+        const result = await getUserByClerkId('user_123');
+        expect(result).toBeDefined();
+        expect(result.name).toBe('Test User');
+    });
+});
+
+describe('upsertUserByClerkId', () => {
+    beforeEach(() => {
+        mockUsers.clear();
+        vi.restoreAllMocks();
     });
 
-    it('returns invalid for an expired code', async () => {
-        const pastDate = new Date(Date.now() - 86400000).toISOString(); // yesterday
-
-        mockPrisma.user.findUnique.mockResolvedValueOnce({
-            id: '2',
-            name: 'Expired User',
-            code: 'EXPRDCDE',
-            expiryDate: pastDate,
+    it('creates a new user when clerkId does not exist', async () => {
+        const result = await upsertUserByClerkId('user_new_123', {
+            id: 'user_new_123',
+            name: 'New User',
+            email: 'new@example.com',
+            role: 'user',
             createdAt: new Date().toISOString(),
         });
 
-        const result = await isCodeValid('EXPRDCDE');
-        expect(result.valid).toBe(false);
-        expect(result.reason).toBe('Code expired');
+        expect(mockPrisma.user.upsert).toHaveBeenCalled();
     });
 
-    it('returns valid for a code with a future expiry date', async () => {
-        const futureDate = new Date(Date.now() + 86400000 * 30).toISOString(); // 30 days ahead
-
-        mockPrisma.user.findUnique.mockResolvedValueOnce({
-            id: '3',
-            name: 'Future User',
-            code: 'FUTRCDE1',
-            expiryDate: futureDate,
+    it('updates an existing user when clerkId exists', async () => {
+        // Seed an existing user
+        mockUsers.set('user_existing', {
+            id: 'user_existing',
+            clerkId: 'user_existing',
+            name: 'Old Name',
+            email: 'old@example.com',
+            role: 'user',
             createdAt: new Date().toISOString(),
         });
 
-        const result = await isCodeValid('FUTRCDE1');
-        expect(result.valid).toBe(true);
-    });
-
-    it('normalizes code to uppercase and trims whitespace', async () => {
-        mockPrisma.user.findUnique.mockImplementationOnce(({ where }) => {
-            // Should receive trimmed uppercase code
-            expect(where.code).toBe('ABCD1234');
-            return Promise.resolve({
-                id: '4',
-                name: 'Normalized User',
-                code: 'ABCD1234',
-                expiryDate: null,
-                createdAt: new Date().toISOString(),
-            });
+        await upsertUserByClerkId('user_existing', {
+            name: 'Updated Name',
+            email: 'updated@example.com',
+            role: 'admin',
         });
 
-        const result = await isCodeValid('  abcd1234  ');
-        expect(result.valid).toBe(true);
+        expect(mockPrisma.user.upsert).toHaveBeenCalled();
+    });
+});
+
+describe('deleteUserByClerkId', () => {
+    beforeEach(() => {
+        mockUsers.clear();
+        vi.restoreAllMocks();
+    });
+
+    it('returns false when clerkId does not exist', async () => {
+        const result = await deleteUserByClerkId('user_nonexistent');
+        expect(result).toBe(false);
+    });
+
+    it('deletes an existing user and returns true', async () => {
+        mockUsers.set('uid1', {
+            id: 'uid1',
+            clerkId: 'user_to_delete',
+            name: 'Delete Me',
+        });
+
+        const result = await deleteUserByClerkId('user_to_delete');
+        expect(result).toBe(true);
     });
 });
 
 // ---------------------------------------------------------------------------
-// generateCode
-// ---------------------------------------------------------------------------
-describe('generateCode', () => {
-    it('returns an 8-character string', () => {
-        const code = generateCode();
-        expect(typeof code).toBe('string');
-        expect(code).toHaveLength(8);
-    });
-
-    it('only contains allowed characters (no ambiguous 0, O, 1, I)', () => {
-        const allowedChars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-        // Generate multiple codes to increase confidence
-        for (let i = 0; i < 20; i++) {
-            const code = generateCode();
-            for (const char of code) {
-                expect(allowedChars).toContain(char);
-            }
-        }
-    });
-
-    it('does not contain ambiguous characters', () => {
-        for (let i = 0; i < 20; i++) {
-            const code = generateCode();
-            expect(code).not.toMatch(/[0OI1]/);
-        }
-    });
-});
-
-// ---------------------------------------------------------------------------
-// Message handling / chat validation flow
-// ---------------------------------------------------------------------------
-describe('Chat API validation logic', () => {
-    it('rejects missing code', async () => {
-        const result = await isCodeValid('');
-        expect(result.valid).toBe(false);
-    });
-
-    it('validates code before processing messages', async () => {
-        mockPrisma.user.findUnique.mockResolvedValueOnce({
-            id: '5',
-            name: 'Chat User',
-            code: 'CHATCODE',
-            expiryDate: null,
-            createdAt: new Date().toISOString(),
-        });
-
-        const validation = await isCodeValid('CHATCODE');
-        expect(validation.valid).toBe(true);
-        expect(validation.user.name).toBe('Chat User');
-    });
-
-    it('message filtering logic only keeps user and assistant roles', () => {
-        // Replicating the message filtering logic from server/index.js
-        // After structure validation, only valid roles pass through
-        const rawMessages = [
-            { role: 'user', content: 'Hello' },
-            { role: 'assistant', content: 'Hi there' },
-            { role: 'system', content: 'Should be filtered from OpenAI call' },
-            { role: 'user', content: 'Follow up' },
-        ];
-
-        const filtered = rawMessages
-            .filter(m => m.role === 'user' || m.role === 'assistant')
-            .map(m => ({ role: m.role, content: m.content }));
-
-        expect(filtered).toHaveLength(3);
-        expect(filtered[0]).toEqual({ role: 'user', content: 'Hello' });
-        expect(filtered[1]).toEqual({ role: 'assistant', content: 'Hi there' });
-        expect(filtered[2]).toEqual({ role: 'user', content: 'Follow up' });
-    });
-});
-
-// ---------------------------------------------------------------------------
-// Sync operations
+// Sync operations (Clerk-based)
 // ---------------------------------------------------------------------------
 describe('Sync operations', () => {
     beforeEach(() => {
@@ -275,76 +243,66 @@ describe('Sync operations', () => {
         vi.restoreAllMocks();
     });
 
-    it('GET /api/sync rejects missing code (via isCodeValid)', async () => {
-        const validation = await isCodeValid('');
-        expect(validation.valid).toBe(false);
-        expect(validation.reason).toBe('Invalid code');
-    });
-
-    it('GET /api/sync rejects invalid code', async () => {
-        const validation = await isCodeValid('NOEXIST1');
-        expect(validation.valid).toBe(false);
-    });
-
-    it('getUserData returns null for non-existent code', async () => {
-        const data = await getUserData('NOCODE');
+    it('getUserDataByClerkId returns null for non-existent clerkId', async () => {
+        const data = await getUserDataByClerkId('user_nonexistent');
         expect(data).toBeNull();
     });
 
-    it('getUserData returns parsed JSON data', async () => {
+    it('getUserDataByClerkId returns parsed JSON data', async () => {
         mockPrisma.user.findUnique.mockResolvedValueOnce({
             id: '10',
+            clerkId: 'user_10',
             name: 'Data User',
-            code: 'DATACODE',
-            expiryDate: null,
+            email: null,
+            role: 'user',
             createdAt: new Date().toISOString(),
             data: JSON.stringify({ messages: ['hello'], settings: { theme: 'dark' } }),
         });
 
-        const data = await getUserData('DATACODE');
+        const data = await getUserDataByClerkId('user_10');
         expect(data).toEqual({ messages: ['hello'], settings: { theme: 'dark' } });
     });
 
-    it('getUserData returns empty object for invalid JSON', async () => {
+    it('getUserDataByClerkId returns empty object for invalid JSON', async () => {
         mockPrisma.user.findUnique.mockResolvedValueOnce({
             id: '11',
+            clerkId: 'user_11',
             name: 'Bad Data User',
-            code: 'BADDATA1',
-            expiryDate: null,
+            email: null,
+            role: 'user',
             createdAt: new Date().toISOString(),
             data: 'not valid json{{{',
         });
 
-        const data = await getUserData('BADDATA1');
+        const data = await getUserDataByClerkId('user_11');
         expect(data).toEqual({});
     });
 
-    it('updateUserData returns false for non-existent code', async () => {
-        const success = await updateUserData('NOCODE', { key: 'value' });
+    it('updateUserDataByClerkId returns false for non-existent clerkId', async () => {
+        const success = await updateUserDataByClerkId('user_nonexistent', { key: 'value' });
         expect(success).toBe(false);
     });
 
-    it('updateUserData updates data for an existing user', async () => {
-        // First call: getUserByCode inside updateUserData
+    it('updateUserDataByClerkId updates data for an existing user', async () => {
+        // First call: getUserByClerkId inside updateUserDataByClerkId
         mockPrisma.user.findUnique.mockResolvedValueOnce({
             id: '12',
+            clerkId: 'user_12',
             name: 'Sync User',
-            code: 'SYNCCODE',
-            expiryDate: null,
+            email: null,
+            role: 'user',
             createdAt: new Date().toISOString(),
             data: '{}',
         });
         // Second call: the update itself
         mockPrisma.user.update.mockResolvedValueOnce({
             id: '12',
+            clerkId: 'user_12',
             name: 'Sync User',
-            code: 'SYNCCODE',
-            expiryDate: null,
-            createdAt: new Date().toISOString(),
             data: JSON.stringify({ messages: ['new message'] }),
         });
 
-        const success = await updateUserData('SYNCCODE', { messages: ['new message'] });
+        const success = await updateUserDataByClerkId('user_12', { messages: ['new message'] });
         expect(success).toBe(true);
     });
 });
@@ -431,7 +389,6 @@ describe('escapeHtml (XSS prevention in email templates)', () => {
 // SSRF Prevention: isValidImageUrl (from server/index.js)
 // ---------------------------------------------------------------------------
 describe('isValidImageUrl (SSRF prevention)', () => {
-    // Reimplementing the functions from server/index.js for direct testing
     function isPrivateHostname(hostname) {
         const host = hostname.replace(/^\[|\]$/g, '');
         if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
@@ -606,13 +563,12 @@ describe('isValidImageUrl (SSRF prevention)', () => {
 // Rate Limiting: checkChatRateLimit (from server/index.js)
 // ---------------------------------------------------------------------------
 describe('checkChatRateLimit (rate limiting)', () => {
-    // Reimplementing the rate-limiting logic from server/index.js for direct testing
     const chatRateLimit = new Map();
-    const CHAT_RATE_WINDOW = 5 * 60 * 1000; // 5 minutes
+    const CHAT_RATE_WINDOW = 5 * 60 * 1000;
     const CHAT_RATE_MAX = 20;
     const CHAT_RATE_MAX_ENTRIES = 10000;
 
-    function checkChatRateLimit(code) {
+    function checkChatRateLimit(userId) {
         const now = Date.now();
         for (const [key, entry] of chatRateLimit.entries()) {
             if (now - entry.windowStart > CHAT_RATE_WINDOW) chatRateLimit.delete(key);
@@ -621,9 +577,9 @@ describe('checkChatRateLimit (rate limiting)', () => {
             const entries = [...chatRateLimit.entries()].sort((a, b) => a[1].windowStart - b[1].windowStart);
             for (let i = 0; i < entries.length / 2; i++) chatRateLimit.delete(entries[i][0]);
         }
-        const entry = chatRateLimit.get(code);
+        const entry = chatRateLimit.get(userId);
         if (!entry || now - entry.windowStart > CHAT_RATE_WINDOW) {
-            chatRateLimit.set(code, { count: 1, windowStart: now });
+            chatRateLimit.set(userId, { count: 1, windowStart: now });
             return false;
         }
         entry.count++;
@@ -635,64 +591,56 @@ describe('checkChatRateLimit (rate limiting)', () => {
     });
 
     it('allows the first request', () => {
-        expect(checkChatRateLimit('USER1')).toBe(false);
+        expect(checkChatRateLimit('user_1')).toBe(false);
     });
 
     it('allows requests up to the limit (20 per 5 min)', () => {
         for (let i = 0; i < CHAT_RATE_MAX; i++) {
-            expect(checkChatRateLimit('USER2')).toBe(false);
+            expect(checkChatRateLimit('user_2')).toBe(false);
         }
     });
 
     it('blocks request #21 within the same window', () => {
         for (let i = 0; i < CHAT_RATE_MAX; i++) {
-            checkChatRateLimit('USER3');
+            checkChatRateLimit('user_3');
         }
-        // The 21st request should be rate limited
-        expect(checkChatRateLimit('USER3')).toBe(true);
+        expect(checkChatRateLimit('user_3')).toBe(true);
     });
 
     it('blocks all subsequent requests after the limit', () => {
         for (let i = 0; i < CHAT_RATE_MAX; i++) {
-            checkChatRateLimit('USER4');
+            checkChatRateLimit('user_4');
         }
-        // Requests 21, 22, 23 should all be blocked
-        expect(checkChatRateLimit('USER4')).toBe(true);
-        expect(checkChatRateLimit('USER4')).toBe(true);
-        expect(checkChatRateLimit('USER4')).toBe(true);
+        expect(checkChatRateLimit('user_4')).toBe(true);
+        expect(checkChatRateLimit('user_4')).toBe(true);
+        expect(checkChatRateLimit('user_4')).toBe(true);
     });
 
-    it('rate limits are per-code (different codes have independent limits)', () => {
+    it('rate limits are per-userId (different users have independent limits)', () => {
         for (let i = 0; i < CHAT_RATE_MAX; i++) {
-            checkChatRateLimit('USER5');
+            checkChatRateLimit('user_5');
         }
-        // USER5 is now rate limited
-        expect(checkChatRateLimit('USER5')).toBe(true);
-        // USER6 should still be allowed
-        expect(checkChatRateLimit('USER6')).toBe(false);
+        expect(checkChatRateLimit('user_5')).toBe(true);
+        expect(checkChatRateLimit('user_6')).toBe(false);
     });
 
     it('allows requests again after the window expires', () => {
-        // Manually set a window that has already expired
-        chatRateLimit.set('USER7', {
+        chatRateLimit.set('user_7', {
             count: CHAT_RATE_MAX + 5,
-            windowStart: Date.now() - CHAT_RATE_WINDOW - 1000, // expired 1 second ago
+            windowStart: Date.now() - CHAT_RATE_WINDOW - 1000,
         });
 
-        // Should be allowed because window has expired
-        expect(checkChatRateLimit('USER7')).toBe(false);
+        expect(checkChatRateLimit('user_7')).toBe(false);
     });
 
     it('resets the counter after window expiry', () => {
-        chatRateLimit.set('USER8', {
+        chatRateLimit.set('user_8', {
             count: CHAT_RATE_MAX,
-            windowStart: Date.now() - CHAT_RATE_WINDOW - 1, // just expired
+            windowStart: Date.now() - CHAT_RATE_WINDOW - 1,
         });
 
-        // First request after expiry starts a new window
-        expect(checkChatRateLimit('USER8')).toBe(false);
-        // Should be on count 1 now, so 19 more are allowed
-        const entry = chatRateLimit.get('USER8');
+        expect(checkChatRateLimit('user_8')).toBe(false);
+        const entry = chatRateLimit.get('user_8');
         expect(entry.count).toBe(1);
     });
 
@@ -706,10 +654,8 @@ describe('checkChatRateLimit (rate limiting)', () => {
             windowStart: Date.now() - CHAT_RATE_WINDOW - 5000,
         });
 
-        // Make a request with a fresh code, which triggers cleanup
         checkChatRateLimit('FRESH1');
 
-        // Expired entries should have been cleaned up
         expect(chatRateLimit.has('EXPIRED1')).toBe(false);
         expect(chatRateLimit.has('EXPIRED2')).toBe(false);
         expect(chatRateLimit.has('FRESH1')).toBe(true);
@@ -724,14 +670,12 @@ describe('Message validation (length and count limits)', () => {
     const MAX_MESSAGE_LENGTH = 4000;
     const MAX_MESSAGES = 50;
 
-    // Replicating the validation logic from the /api/chat endpoint
     function validateMessages(rawMessages) {
         if (rawMessages !== undefined && !Array.isArray(rawMessages)) {
             return { valid: false, error: 'messages must be an array' };
         }
         const messagesArr = Array.isArray(rawMessages) ? rawMessages : [];
 
-        // Validate structure of each message
         for (const msg of messagesArr) {
             if (!msg || typeof msg !== 'object') {
                 return { valid: false, error: 'Each message must be an object with role and content' };
@@ -794,7 +738,7 @@ describe('Message validation (length and count limits)', () => {
         const messages = [
             { role: 'user', content: 'Short message' },
             { role: 'assistant', content: 'Also short' },
-            { role: 'user', content: 'x'.repeat(4001) }, // This one is too long
+            { role: 'user', content: 'x'.repeat(4001) },
         ];
         const result = validateMessages(messages);
         expect(result.valid).toBe(false);
@@ -815,11 +759,9 @@ describe('Message validation (length and count limits)', () => {
             role: i % 2 === 0 ? 'user' : 'assistant',
             content: `Message ${i}`,
         }));
-        // Add system messages that should be filtered out of the count
         messages.push({ role: 'system', content: 'System message' });
 
         const result = validateMessages(messages);
-        // Only 50 user/assistant messages counted, system is filtered
         expect(result.valid).toBe(true);
         expect(result.messages).toHaveLength(50);
     });
@@ -866,9 +808,9 @@ describe('Message validation (length and count limits)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SessionStorage verification: useBotAuth uses sessionStorage, not localStorage
+// useBotAuth: Clerk-based verification
 // ---------------------------------------------------------------------------
-describe('useBotAuth sessionStorage verification', () => {
+describe('useBotAuth Clerk-based verification', () => {
     let hookSource;
 
     beforeAll(async () => {
@@ -878,35 +820,71 @@ describe('useBotAuth sessionStorage verification', () => {
         hookSource = fs.readFileSync(hookPath, 'utf-8');
     });
 
-    it('uses sessionStorage for storing access codes', () => {
+    it('imports from @clerk/clerk-react', () => {
+        expect(hookSource).toContain('@clerk/clerk-react');
+    });
+
+    it('uses useUser hook from Clerk', () => {
+        expect(hookSource).toContain('useUser');
+    });
+
+    it('uses useAuth hook from Clerk', () => {
+        expect(hookSource).toContain('useAuth');
+    });
+
+    it('does NOT contain jsonwebtoken references', () => {
+        expect(hookSource).not.toContain('jsonwebtoken');
+        expect(hookSource).not.toContain('jwt');
+    });
+
+    it('does NOT contain access code login logic', () => {
+        expect(hookSource).not.toContain('validateOnly');
+        expect(hookSource).not.toContain('bot_user_code');
+    });
+
+    it('calls clerk.signOut() on logout', () => {
+        expect(hookSource).toContain('signOut');
+    });
+
+    it('uses sessionStorage for preferences (name, lang)', () => {
         expect(hookSource).toContain('sessionStorage');
     });
+});
 
-    it('does NOT use localStorage anywhere in the hook', () => {
-        expect(hookSource).not.toContain('localStorage');
+// ---------------------------------------------------------------------------
+// Security: server/auth.js uses Clerk, not JWT
+// ---------------------------------------------------------------------------
+describe('Security: auth module uses Clerk', () => {
+    let authSource;
+
+    beforeAll(async () => {
+        const fs = await vi.importActual('fs');
+        const path = await vi.importActual('path');
+        const authPath = path.join(__dirname, '..', 'server', 'auth.js');
+        authSource = fs.readFileSync(authPath, 'utf-8');
     });
 
-    it('stores bot_user_code in sessionStorage', () => {
-        expect(hookSource).toContain('sessionStorage.setItem("bot_user_code"');
+    it('imports from @clerk/express', () => {
+        expect(authSource).toContain('@clerk/express');
     });
 
-    it('stores bot_user_name in sessionStorage', () => {
-        expect(hookSource).toContain('sessionStorage.setItem("bot_user_name"');
+    it('does NOT import jsonwebtoken', () => {
+        expect(authSource).not.toContain('jsonwebtoken');
     });
 
-    it('stores bot_login_ts in sessionStorage', () => {
-        expect(hookSource).toContain('sessionStorage.setItem("bot_login_ts"');
+    it('does NOT import bcryptjs', () => {
+        expect(authSource).not.toContain('bcryptjs');
     });
 
-    it('clears all session keys on logout', () => {
-        expect(hookSource).toContain('sessionStorage.removeItem("bot_user_code")');
-        expect(hookSource).toContain('sessionStorage.removeItem("bot_user_name")');
-        expect(hookSource).toContain('sessionStorage.removeItem("bot_name")');
-        expect(hookSource).toContain('sessionStorage.removeItem("bot_lang")');
+    it('does NOT contain JWT_SECRET references', () => {
+        expect(authSource).not.toContain('JWT_SECRET');
     });
 
-    it('reads initial state from sessionStorage', () => {
-        expect(hookSource).toContain('sessionStorage.getItem("bot_user_code")');
-        expect(hookSource).toContain('sessionStorage.getItem("bot_user_name")');
+    it('exports checkAdminAuth function', () => {
+        expect(authSource).toContain('export function checkAdminAuth');
+    });
+
+    it('exports clerkAuth middleware', () => {
+        expect(authSource).toContain('export const clerkAuth');
     });
 });

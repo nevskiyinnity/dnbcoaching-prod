@@ -15,7 +15,7 @@ interface WeightEntry {
 
 export default function Progress() {
     const navigate = useNavigate();
-    const { userCode, effectiveName } = useBotAuth();
+    const { userCode, effectiveName, authenticated, isLoaded } = useBotAuth();
     const [weight, setWeight] = useState("");
     const [data, setData] = useState<WeightEntry[]>([]);
 
@@ -43,7 +43,15 @@ export default function Progress() {
         toast.success("Gewicht opgeslagen!");
     };
 
-    if (!userCode) {
+    if (!isLoaded) {
+        return (
+            <div className="min-h-screen flex items-center justify-center">
+                <p className="text-muted-foreground">Loading...</p>
+            </div>
+        );
+    }
+
+    if (!authenticated || !userCode) {
         return (
             <div className="min-h-screen flex items-center justify-center">
                 <div className="text-center">

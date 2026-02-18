@@ -9,9 +9,10 @@ generator client {
 
 model User {
   id         String  @id
+  clerkId    String? @unique
   name       String
-  code       String  @unique
-  expiryDate String?
+  email      String?
+  role       String  @default("user")
   createdAt  String
   data       String?
 

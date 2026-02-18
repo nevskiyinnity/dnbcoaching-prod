@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { Resend } from 'resend';
+import { Webhook } from 'svix';
 
 // Initialize Sentry before anything else
 Sentry.init({
@@ -16,8 +17,13 @@ Sentry.init({
 });
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
-import { getAllUsers, addUser, updateUser, deleteUser, generateCode, isCodeValid, getSetting, updateSetting } from './db.js';
-import { hashPassword, verifyPassword, signToken, checkAdminAuth } from './auth.js';
+import {
+    getAllUsers, addUser, updateUser, deleteUser,
+    getUserByClerkId, upsertUserByClerkId, deleteUserByClerkId,
+    getUserDataByClerkId, updateUserDataByClerkId,
+    getSetting, updateSetting,
+} from './db.js';
+import { clerkAuth, checkAdminAuth, getClerkUserId } from './auth.js';
 import { logger } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -37,17 +43,11 @@ function isPrivateHostname(hostname) {
     const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
     if (ipv4Match) {
         const [, a, b, c, d] = ipv4Match.map(Number);
-        // 0.0.0.0
         if (a === 0 && b === 0 && c === 0 && d === 0) return true;
-        // 127.0.0.0/8 (localhost)
         if (a === 127) return true;
-        // 10.0.0.0/8 (private)
         if (a === 10) return true;
-        // 172.16.0.0/12 (private)
         if (a === 172 && b >= 16 && b <= 31) return true;
-        // 192.168.0.0/16 (private)
         if (a === 192 && b === 168) return true;
-        // 169.254.0.0/16 (link-local / AWS metadata)
         if (a === 169 && b === 254) return true;
     }
 
@@ -56,13 +56,10 @@ function isPrivateHostname(hostname) {
 
 function isValidImageUrl(url) {
     if (!url || typeof url !== 'string') return false;
-    // Allow base64 data URLs for images only
     if (url.startsWith('data:image/')) return true;
-    // Allow HTTPS URLs only
     try {
         const parsed = new URL(url);
         if (parsed.protocol !== 'https:') return false;
-        // Block internal/private IPs to prevent SSRF
         if (isPrivateHostname(parsed.hostname)) return false;
         return true;
     } catch {
@@ -77,24 +74,6 @@ if (!OPENAI_API_KEY) {
     logger.warn('OPENAI_API_KEY not set — AI features will be unavailable');
 }
 
-// --- Admin Password Hash (compute once at module load) ---
-let _adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || null;
-let _adminPasswordHashPromise = null;
-
-function getAdminPasswordHash() {
-    if (_adminPasswordHash) return Promise.resolve(_adminPasswordHash);
-    if (!process.env.ADMIN_PASSWORD) {
-        throw new Error('Either ADMIN_PASSWORD_HASH or ADMIN_PASSWORD environment variable is required');
-    }
-    // Lazy initialization: hash once and cache the result
-    if (!_adminPasswordHashPromise) {
-        _adminPasswordHashPromise = hashPassword(process.env.ADMIN_PASSWORD).then(hash => {
-            _adminPasswordHash = hash;
-            return hash;
-        });
-    }
-    return _adminPasswordHashPromise;
-}
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const RESEND_API_KEY = process.env.VITE_RESEND_API_KEY;
 
@@ -124,7 +103,6 @@ app.use((req, res, next) => {
                 return res.status(403).json({ error: 'CSRF validation failed: invalid origin' });
             }
         }
-        // Allow non-browser requests (curl, etc.) that don't send Origin header
     }
     next();
 });
@@ -133,8 +111,74 @@ app.use((req, res, next) => {
 app.use(cors({
     origin: process.env.ALLOWED_ORIGINS?.split(',') ?? ['http://localhost:8080'],
 }));
+
+// Webhook route MUST be before express.json() to get raw body
+app.post('/api/webhooks/clerk', express.raw({ type: 'application/json' }), async (req, res) => {
+    const CLERK_WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
+    if (!CLERK_WEBHOOK_SECRET) {
+        logger.error('CLERK_WEBHOOK_SECRET is not set');
+        return res.status(500).json({ error: 'Webhook secret not configured' });
+    }
+
+    const svixId = req.headers['svix-id'];
+    const svixTimestamp = req.headers['svix-timestamp'];
+    const svixSignature = req.headers['svix-signature'];
+
+    if (!svixId || !svixTimestamp || !svixSignature) {
+        return res.status(400).json({ error: 'Missing svix headers' });
+    }
+
+    const wh = new Webhook(CLERK_WEBHOOK_SECRET);
+    let evt;
+
+    try {
+        evt = wh.verify(req.body, {
+            'svix-id': svixId,
+            'svix-timestamp': svixTimestamp,
+            'svix-signature': svixSignature,
+        });
+    } catch (err) {
+        logger.error('Webhook verification failed', err);
+        return res.status(400).json({ error: 'Invalid webhook signature' });
+    }
+
+    const eventType = evt.type;
+    const data = evt.data;
+
+    try {
+        if (eventType === 'user.created' || eventType === 'user.updated') {
+            const clerkId = data.id;
+            const name = [data.first_name, data.last_name].filter(Boolean).join(' ') || 'User';
+            const email = data.email_addresses?.[0]?.email_address || null;
+            const role = data.public_metadata?.role || 'user';
+
+            await upsertUserByClerkId(clerkId, {
+                id: clerkId,
+                name,
+                email,
+                role,
+                createdAt: new Date(data.created_at).toISOString(),
+            });
+
+            logger.info(`Clerk webhook: ${eventType} synced`, { clerkId, name, email });
+        } else if (eventType === 'user.deleted') {
+            const clerkId = data.id;
+            await deleteUserByClerkId(clerkId);
+            logger.info(`Clerk webhook: user.deleted`, { clerkId });
+        }
+    } catch (err) {
+        logger.error('Webhook handler error', err);
+        return res.status(500).json({ error: 'Webhook handler error' });
+    }
+
+    return res.status(200).json({ received: true });
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
+
+// Attach Clerk auth to all subsequent routes
+app.use(clerkAuth);
 
 // --- Rate Limiting (Upstash Redis with in-memory fallback) ---
 
@@ -145,7 +189,6 @@ const upstashRedis = process.env.UPSTASH_REDIS_REST_URL
       })
     : undefined;
 
-// Upstash rate limiters (only created when Redis is configured)
 const chatUpstashLimiter = upstashRedis
     ? new Ratelimit({
           redis: upstashRedis,
@@ -155,16 +198,6 @@ const chatUpstashLimiter = upstashRedis
       })
     : null;
 
-const adminLoginUpstashLimiter = upstashRedis
-    ? new Ratelimit({
-          redis: upstashRedis,
-          limiter: Ratelimit.slidingWindow(5, '900 s'),
-          analytics: true,
-          prefix: 'dnb-coaching:admin-login-ratelimit',
-      })
-    : null;
-
-// In-memory fallback rate limiter factory (used when Upstash not configured)
 const RATE_LIMIT_MAX_ENTRIES = 10000;
 
 function createRateLimiter(windowMs, maxRequests) {
@@ -172,13 +205,9 @@ function createRateLimiter(windowMs, maxRequests) {
 
     return function checkRateLimit(key) {
         const now = Date.now();
-
-        // Inline cleanup: remove all expired entries on every call
         for (const [k, entry] of store.entries()) {
             if (now - entry.windowStart > windowMs) store.delete(k);
         }
-
-        // Evict oldest half if store grows too large (DoS protection)
         if (store.size > RATE_LIMIT_MAX_ENTRIES) {
             const entries = [...store.entries()].sort((a, b) => a[1].windowStart - b[1].windowStart);
             for (let i = 0; i < entries.length / 2; i++) store.delete(entries[i][0]);
@@ -194,11 +223,8 @@ function createRateLimiter(windowMs, maxRequests) {
     };
 }
 
-// In-memory fallback limiters
 const inMemoryChatLimiter = createRateLimiter(5 * 60 * 1000, 20);
-const inMemoryAdminLoginLimiter = createRateLimiter(15 * 60 * 1000, 5);
 
-// Unified rate limit check: tries Upstash first, falls back to in-memory
 async function checkChatRateLimit(key) {
     if (!chatUpstashLimiter) return inMemoryChatLimiter(key);
     try {
@@ -209,47 +235,15 @@ async function checkChatRateLimit(key) {
     }
 }
 
-async function checkAdminLoginRateLimit(key) {
-    if (!adminLoginUpstashLimiter) return inMemoryAdminLoginLimiter(key);
-    try {
-        const { success } = await adminLoginUpstashLimiter.limit(key);
-        return !success;
-    } catch {
-        return inMemoryAdminLoginLimiter(key);
-    }
-}
-
 // --- API Routes ---
 
-// Admin Login — returns JWT (rate limited: 5 attempts per 15 min per IP)
-app.post('/api/admin/login', async (req, res) => {
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
-    if (await checkAdminLoginRateLimit(clientIp)) {
-        return res.status(429).json({ success: false, message: 'Too many login attempts. Please try again later.' });
-    }
-
-    const { password } = req.body;
-    if (!password) {
-        return res.status(400).json({ success: false, message: 'Password required' });
-    }
-
-    try {
-        const storedHash = await getAdminPasswordHash();
-        const valid = await verifyPassword(password, storedHash);
-
-        if (!valid) {
-            return res.status(401).json({ success: false, message: 'Invalid password' });
-        }
-
-        const token = signToken({ role: 'admin' });
-        return res.status(200).json({ success: true, token });
-    } catch (err) {
-        logger.error('Admin login error', err);
-        return res.status(500).json({ success: false, message: 'Authentication error' });
-    }
+// Health check (public)
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok' });
 });
 
-// Admin Users CRUD
+// --- Admin Routes (protected by Clerk + admin role) ---
+
 app.get('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
         const users = await getAllUsers();
@@ -261,15 +255,14 @@ app.get('/api/admin/users', checkAdminAuth, async (req, res) => {
 
 app.post('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
-        const { name, expiryDate } = req.body;
+        const { name, email, role } = req.body;
         if (!name || !name.trim()) return res.status(400).json({ message: 'Name is required' });
 
-        const code = generateCode();
         const newUser = {
             id: crypto.randomUUID(),
             name: name.trim(),
-            code,
-            expiryDate: expiryDate || null,
+            email: email || null,
+            role: role || 'user',
             createdAt: new Date().toISOString(),
         };
 
@@ -282,10 +275,10 @@ app.post('/api/admin/users', checkAdminAuth, async (req, res) => {
 
 app.put('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
-        const { id, name, expiryDate } = req.body;
+        const { id, name, email, role } = req.body;
         if (!id) return res.status(400).json({ message: 'User ID is required' });
 
-        const success = await updateUser(id, { name: name?.trim(), expiryDate });
+        const success = await updateUser(id, { name: name?.trim(), email, role });
         if (!success) return res.status(404).json({ message: 'User not found' });
         res.json({ success: true });
     } catch (e) {
@@ -306,15 +299,6 @@ app.delete('/api/admin/users', checkAdminAuth, async (req, res) => {
     }
 });
 
-app.post('/api/admin/users/reset', checkAdminAuth, async (req, res) => {
-    try {
-        await updateSetting('min_auth_ts', Date.now());
-        res.json({ success: true, message: 'All sessions invalidated (timestamp update)' });
-    } catch (e) {
-        res.status(500).json({ message: e.message });
-    }
-});
-
 // Escape HTML special characters to prevent XSS in email templates
 function escapeHtml(str) {
     return String(str)
@@ -325,11 +309,10 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
-// Contact Form
+// Contact Form (public)
 app.post('/api/contact', async (req, res) => {
     const { name, email, message } = req.body;
 
-    // Basic validation locally
     if (!name || !email || !message) {
         return res.status(400).json({ message: 'All fields are required' });
     }
@@ -366,43 +349,41 @@ app.post('/api/contact', async (req, res) => {
     }
 });
 
-// Chat API
+// --- Chat API (requires Clerk auth) ---
 import { SYSTEM_PROMPT } from '../config/constants.js';
 
-// --- Sync API ---
-import { getUserData, updateUserData } from './db.js';
-
 app.get('/api/sync', async (req, res) => {
-    const code = req.query.code;
-    if (!code) return res.status(400).json({ message: 'Code required' });
+    const userId = getClerkUserId(req);
+    if (!userId) return res.status(401).json({ message: 'Not authenticated' });
 
-    // Simple validation (same as chat)
-    const validation = await isCodeValid(code);
-    if (!validation.valid) return res.status(401).json({ message: validation.reason });
-
-    const data = await getUserData(code);
-    // Inject system settings
-    if (data) {
-        data.__sys = {
-            minAuth: await getSetting('min_auth_ts', 0)
-        };
-    }
+    const data = await getUserDataByClerkId(userId);
     res.json(data || {});
 });
 
 app.post('/api/sync', async (req, res) => {
-    const { code, data } = req.body;
-    if (!code || !data) return res.status(400).json({ message: 'Code and data required' });
+    const userId = getClerkUserId(req);
+    if (!userId) return res.status(401).json({ message: 'Not authenticated' });
 
-    const validation = await isCodeValid(code);
-    if (!validation.valid) return res.status(401).json({ message: validation.reason });
+    const { data } = req.body;
+    if (!data) return res.status(400).json({ message: 'Data required' });
 
-    const success = await updateUserData(code, data);
+    const success = await updateUserDataByClerkId(userId, data);
     if (success) {
         res.json({ success: true });
     } else {
         res.status(500).json({ message: 'Failed to update data' });
     }
+});
+
+// Get current user info
+app.get('/api/me', async (req, res) => {
+    const userId = getClerkUserId(req);
+    if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+
+    const user = await getUserByClerkId(userId);
+    if (!user) return res.status(404).json({ message: 'User not found in database' });
+
+    res.json({ user: { id: user.id, clerkId: user.clerkId, name: user.name, email: user.email, role: user.role } });
 });
 
 const LANGUAGE_INSTRUCTIONS = {
@@ -413,26 +394,18 @@ const LANGUAGE_INSTRUCTIONS = {
 app.post('/api/chat', async (req, res) => {
     if (!OPENAI_API_KEY) return res.status(500).json({ message: 'Missing OPENAI_API_KEY' });
 
+    // Require Clerk authentication
+    const userId = getClerkUserId(req);
+    if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+
     try {
         if (!req.body) {
             logger.error('[CRITICAL] req.body is undefined. Middleware failure?');
             return res.status(400).json({ message: 'Request body is missing' });
         }
-        const { messages: rawMessages, code, name, lang, validateOnly } = req.body;
+        const { messages: rawMessages, name, lang } = req.body;
 
-        // Validation
-        const codestr = (code || '').trim();
-        if (validateOnly) {
-            const v = await isCodeValid(codestr);
-            if (!v.valid) return res.status(401).json({ valid: false, message: v.reason || 'Invalid code' });
-            return res.status(200).json({ valid: true, userName: v.user?.name });
-        }
-
-        if (!codestr) return res.status(401).json({ message: 'Access code required' });
-        const validation = await isCodeValid(codestr);
-        if (!validation.valid) return res.status(401).json({ message: validation.reason });
-
-        if (await checkChatRateLimit(codestr)) {
+        if (await checkChatRateLimit(userId)) {
             return res.status(429).json({ error: 'Too many requests. Please try again later.' });
         }
 
@@ -447,7 +420,6 @@ app.post('/api/chat', async (req, res) => {
 
         const messagesArr = Array.isArray(rawMessages) ? rawMessages : [];
 
-        // Validate structure of each message before filtering
         for (const msg of messagesArr) {
             if (!msg || typeof msg !== 'object') {
                 return res.status(400).json({ error: 'Each message must be an object with role and content' });
@@ -463,7 +435,6 @@ app.post('/api/chat', async (req, res) => {
             }
         }
 
-        // Keep only user and assistant messages for the OpenAI call
         const userMessages = messagesArr
             .filter(m => m.role === 'user' || m.role === 'assistant')
             .map(m => ({ role: m.role, content: m.content }));
@@ -472,23 +443,20 @@ app.post('/api/chat', async (req, res) => {
             return res.status(400).json({ error: `Too many messages. Maximum ${MAX_MESSAGES} allowed.` });
         }
 
-        // Handle image if present (attach to the last user message or add as new)
+        // Handle image if present
         const { image } = req.body;
         if (image && !isValidImageUrl(image)) {
             return res.status(400).json({ error: 'Invalid image URL format' });
         }
         if (image) {
-            // New multimodal message logic
             const lastMsg = userMessages[userMessages.length - 1];
             if (lastMsg && lastMsg.role === 'user') {
-                // Remove [Image Uploaded] marker if present to avoid duplication in text
                 const textContent = lastMsg.content.replace(' [Image Uploaded]', '');
                 lastMsg.content = [
                     { type: "text", text: textContent },
                     { type: "image_url", image_url: { url: image } }
                 ];
             } else {
-                // Fallback if no user message found (shouldn't happen with current frontend logic)
                 userMessages.push({
                     role: 'user',
                     content: [
@@ -508,7 +476,6 @@ app.post('/api/chat', async (req, res) => {
             ...userMessages
         ];
 
-        // OpenAI Call
         const resp = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: {

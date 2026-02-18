@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import { toast } from "sonner";
 import { coachMedia } from '@/lib/coachMedia';
 import { useSync } from './useSync';
@@ -33,15 +34,12 @@ function parseBlocks(text: string): MessageBlock[] {
     while ((m = re.exec(text))) {
         if (m.index > lastIndex) parts.push({ type: 'text', text: text.slice(lastIndex, m.index), id: `text-${Date.now()}-${lastIndex}` });
         const videoId = m[1] as keyof typeof coachMedia;
-        // Assuming coachMedia is still relevant for validating video IDs
         if (coachMedia[videoId]) parts.push({ type: 'video', id: videoId });
         lastIndex = re.lastIndex;
     }
     if (lastIndex < text.length) parts.push({ type: 'text', text: text.slice(lastIndex), id: `text-${Date.now()}-${lastIndex}` });
     return parts;
 }
-
-
 
 function isSameDay(d1: Date, d2: Date) {
     return d1 && d2 && d1.getFullYear() === d2.getFullYear() &&
@@ -53,12 +51,10 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [loading, setLoading] = useState(false);
     const [pinnedMessages, setPinnedMessages] = useState<string[]>([]);
+    const { getToken } = useAuth();
 
-    // Use Sync Hook for Cloud Storage
     const { syncUp, userData, synced } = useSync(userCode);
 
-    // Load from local storage (which useSync populates from server) OR directly from sync
-    // We prioritize local storage for immediate render, but update if Sync changes things
     useEffect(() => {
         const saved = localStorage.getItem("bot_history_v2");
         if (saved) {
@@ -68,14 +64,13 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
                 console.error("Failed to parse history", e);
             }
         }
-    }, [synced]); // Re-run when sync completes
+    }, [synced]);
 
     useEffect(() => {
         const savedPins = localStorage.getItem("bot_pins");
         if (savedPins) setPinnedMessages(JSON.parse(savedPins));
     }, []);
 
-    // Auto-Gamification Logic
     const updateGamification = useCallback(() => {
         try {
             const stored = localStorage.getItem('bot_gamification');
@@ -87,25 +82,19 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
             let newStreak = stats.streak;
             let newScore = stats.score;
 
-            // Valid Date check
             if (!last || isNaN(last.getTime())) {
-                // reset if invalid
                 newStreak = 1;
                 newScore += 10;
             } else if (isSameDay(now, last)) {
-                // Already active today, just add small score
-                newScore += 1; // Small XP for continued chatting
+                newScore += 1;
             } else {
-                // Different day
                 const yesterday = new Date();
                 yesterday.setDate(now.getDate() - 1);
 
                 if (isSameDay(yesterday, last)) {
-                    // Consecutive day
                     newStreak += 1;
-                    newScore += 20 + (newStreak * 5); // Bonus for streak
+                    newScore += 20 + (newStreak * 5);
                 } else {
-                    // Streaks broken
                     newStreak = 1;
                     newScore += 10;
                 }
@@ -113,11 +102,9 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
 
             const newStats = { ...stats, streak: newStreak, score: newScore, lastActive: now.toISOString() };
 
-            // Save
             localStorage.setItem('bot_gamification', JSON.stringify(newStats));
             syncUp('gamification', newStats);
 
-            // Trigger update for UI
             window.dispatchEvent(new Event("storage"));
         } catch (e) {
             console.error("Error in gamification logic", e);
@@ -128,10 +115,9 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
     const send = async (text: string, image?: string) => {
         if (!text.trim() && !image) return;
 
-        setLoading(true); // Set loading immediately
+        setLoading(true);
 
         try {
-            // Create User Message
             const userMsg: ChatMessage = {
                 role: "user",
                 content: text + (image ? " [Image Uploaded]" : ""),
@@ -141,22 +127,20 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
 
             const newHistory = [...messages, userMsg];
 
-            // Optimistic update
             setMessages(newHistory);
             localStorage.setItem("bot_history_v2", JSON.stringify(newHistory));
             syncUp('chatHistory', newHistory);
 
-            // Trigger gamification safely
             try {
                 updateGamification();
             } catch (e) {
                 console.error("Gamification update failed", e);
             }
 
-            // Prepare payload
+            const token = await getToken();
+
             const payload = {
                 messages: newHistory.map(({ role, content }) => ({ role, content })),
-                code: userCode,
                 name: userName,
                 lang,
                 image: image
@@ -164,7 +148,10 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
 
             const res = await fetch("/api/chat", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`,
+                },
                 body: JSON.stringify(payload)
             });
 
@@ -202,12 +189,9 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
 
         setPinnedMessages(newPins);
         localStorage.setItem("bot_pins", JSON.stringify(newPins));
-        // syncUp('pinnedMessages', newPins); // Optional: Sync pins too
     };
 
-    // Filter messages to only include those that are not 'system' role for display
     const assistantBlocks = messages.filter(m => m.role !== 'system');
-    // Filter messages to get the actual pinned message objects
     const pinnedBlocks = messages.filter(m => pinnedMessages.includes(m.id));
 
     return {
@@ -215,11 +199,11 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
         loading,
         send,
         pinnedMessages,
-        assistantBlocks, // Actually all displayable blocks
+        assistantBlocks,
         pinnedBlocks,
         togglePin,
         isPinned: (id: string) => pinnedMessages.includes(id),
-        synced, // Expose synced state
-        userData // Expose raw user data for system checks
+        synced,
+        userData
     };
 }

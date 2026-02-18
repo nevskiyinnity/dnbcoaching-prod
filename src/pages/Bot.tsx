@@ -10,26 +10,21 @@ import { VideoBlock } from "@/components/chat/VideoBlock";
 import { useBotAuth } from "@/hooks/useBotAuth";
 import { useChat } from "@/hooks/useChat";
 
-// import { useSync } from "@/hooks/useSync";
-
 // Default stats
 const DEFAULT_STATS = { streak: 0, badges: 0, score: 0 };
 
 export default function Bot() {
   const {
     authenticated,
+    isLoaded,
     userCode,
     effectiveName,
     inputName,
     setInputName,
     lang,
     setLang,
-    login,
     logout
   } = useBotAuth();
-
-  // Sync Hook removed (handled inside useChat)
-  // const { synced, syncUp } = useSync(userCode);
 
   // Local Gamification State
   const [stats, setStats] = React.useState(() => {
@@ -42,7 +37,7 @@ export default function Bot() {
     }
   });
 
-  // Listen for sync updates (from useSync hook)
+  // Listen for sync updates
   useEffect(() => {
     const handleStorage = () => {
       try {
@@ -64,7 +59,7 @@ export default function Bot() {
     pinnedBlocks,
     togglePin,
     isPinned,
-    synced, // Get synced state from useChat
+    synced,
     userData,
   } = useChat(userCode, effectiveName, lang);
 
@@ -72,19 +67,17 @@ export default function Bot() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [assistantBlocks, loading]);
 
-  // Session Invalidation Check
-  useEffect(() => {
-    if (authenticated && userData?.__sys?.minAuth) {
-      const loginTs = parseInt(localStorage.getItem('bot_login_ts') || '0', 10);
-      if (userData.__sys.minAuth > loginTs) {
-        toast.error("Session expired. Please log in again.");
-        logout();
-      }
-    }
-  }, [userData, authenticated, logout]);
+  // Show loading while Clerk is initializing
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p className="text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
 
   if (!authenticated) {
-    return <LoginScreen onLogin={login} />;
+    return <LoginScreen />;
   }
 
   return (
@@ -93,7 +86,7 @@ export default function Bot() {
         <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-3xl md:text-4xl font-bold">DNB Coach Bot</h1>
-            <p className="text-muted-foreground">Persoonlijk plan • Voeding • Mindset • Progressie • Community</p>
+            <p className="text-muted-foreground">Persoonlijk plan . Voeding . Mindset . Progressie . Community</p>
           </div>
           <div className="flex items-center gap-2">
             <Input
@@ -102,7 +95,6 @@ export default function Bot() {
               onChange={e => setInputName(e.target.value)}
               className="w-48"
             />
-            {/* Name auto-saves via hook effect */}
             <div className="flex items-center gap-1">
               <LangButton active={lang === 'nl'} onClick={() => setLang('nl')}>NL</LangButton>
               <LangButton active={lang === 'en'} onClick={() => setLang('en')}>EN</LangButton>
@@ -159,7 +151,7 @@ export default function Bot() {
                     )}
                   </ChatBubble>
                 ))}
-                {loading && <ChatBubble role="assistant"><p>Even denken…</p></ChatBubble>}
+                {loading && <ChatBubble role="assistant"><p>Even denken...</p></ChatBubble>}
                 <div ref={bottomRef} />
               </div>
 

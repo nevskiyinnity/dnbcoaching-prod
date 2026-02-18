@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useUser, useAuth, SignIn } from "@clerk/clerk-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,61 +10,45 @@ import { Trash2, Edit, Plus, Copy, Check } from "lucide-react";
 
 interface User {
   id: string;
+  clerkId?: string;
   name: string;
-  code: string;
-  expiryDate: string | null;
+  email?: string;
+  role: string;
   createdAt: string;
 }
 
 export default function Admin() {
-  const [authenticated, setAuthenticated] = useState(false);
-  const [password, setPassword] = useState("");
+  const { isSignedIn, user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newUserName, setNewUserName] = useState("");
-  const [newUserExpiry, setNewUserExpiry] = useState("");
-  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Check if user has admin role via Clerk publicMetadata
+  const isAdmin = (user?.publicMetadata as { role?: string })?.role === 'admin';
 
   useEffect(() => {
-    const token = sessionStorage.getItem("admin_token");
-    if (token) {
-      setAuthenticated(true);
+    if (isSignedIn && isAdmin) {
       loadUsers();
     }
-  }, []);
+  }, [isSignedIn, isAdmin]);
 
-  async function handleLogin() {
-    setLoading(true);
-    try {
-      const resp = await fetch("/api/admin/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      const data = await resp.json();
-
-      if (data.success && data.token) {
-        sessionStorage.setItem("admin_token", data.token);
-        setAuthenticated(true);
-        loadUsers();
-      } else {
-        toast.error("Incorrect password");
-      }
-    } catch {
-      toast.error("Login failed");
-    } finally {
-      setLoading(false);
-    }
+  async function getAuthHeaders() {
+    const token = await getToken();
+    return {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
   }
 
   async function loadUsers() {
     try {
-      const token = sessionStorage.getItem("admin_token");
-      const resp = await fetch("/api/admin/users", {
-        headers: { "Authorization": `Bearer ${token}` },
-      });
+      const headers = await getAuthHeaders();
+      const resp = await fetch("/api/admin/users", { headers });
 
       if (!resp.ok) throw new Error("Failed to load users");
 
@@ -82,26 +67,23 @@ export default function Admin() {
 
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("admin_token");
+      const headers = await getAuthHeaders();
       const resp = await fetch("/api/admin/users", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
-        },
+        headers,
         body: JSON.stringify({
           name: newUserName,
-          expiryDate: newUserExpiry || null,
+          email: newUserEmail || null,
         }),
       });
 
       if (!resp.ok) throw new Error("Failed to add user");
 
       const data = await resp.json();
-      toast.success(`User added! Code: ${data.user.code}`);
+      toast.success(`User added: ${data.user.name}`);
       setShowAddDialog(false);
       setNewUserName("");
-      setNewUserExpiry("");
+      setNewUserEmail("");
       loadUsers();
     } catch (e) {
       toast.error("Failed to add user");
@@ -110,17 +92,14 @@ export default function Admin() {
     }
   }
 
-  async function handleUpdateUser(id: string, name: string, expiryDate: string | null) {
+  async function handleUpdateUser(id: string, name: string, email: string | undefined) {
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("admin_token");
+      const headers = await getAuthHeaders();
       const resp = await fetch("/api/admin/users", {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
-        },
-        body: JSON.stringify({ id, name, expiryDate }),
+        headers,
+        body: JSON.stringify({ id, name, email }),
       });
 
       if (!resp.ok) throw new Error("Failed to update user");
@@ -140,13 +119,10 @@ export default function Admin() {
 
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("admin_token");
+      const headers = await getAuthHeaders();
       const resp = await fetch("/api/admin/users", {
         method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
-        },
+        headers,
         body: JSON.stringify({ id }),
       });
 
@@ -161,35 +137,38 @@ export default function Admin() {
     }
   }
 
-  function copyToClipboard(code: string) {
-    navigator.clipboard.writeText(code);
-    setCopiedCode(code);
-    setTimeout(() => setCopiedCode(null), 2000);
-    toast.success("Code copied!");
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text);
+    setCopiedId(text);
+    setTimeout(() => setCopiedId(null), 2000);
+    toast.success("Copied!");
   }
 
-  if (!authenticated) {
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p className="text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!isSignedIn) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <SignIn routing="hash" />
+      </div>
+    );
+  }
+
+  if (!isAdmin) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>Admin Login</CardTitle>
+            <CardTitle>Access Denied</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                placeholder="Enter admin password"
-              />
-            </div>
-            <Button onClick={handleLogin} disabled={loading} className="w-full">
-              Login
-            </Button>
+          <CardContent>
+            <p className="text-muted-foreground">You do not have admin access. Please contact an administrator.</p>
           </CardContent>
         </Card>
       </div>
@@ -213,7 +192,7 @@ export default function Admin() {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Add New User</DialogTitle>
-                <DialogDescription>Create a new user with access code for the coaching bot.</DialogDescription>
+                <DialogDescription>Create a new user record in the database.</DialogDescription>
               </DialogHeader>
               <div className="space-y-4 mt-4">
                 <div>
@@ -226,12 +205,13 @@ export default function Admin() {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="expiry">Expiry Date (optional)</Label>
+                  <Label htmlFor="email">Email (optional)</Label>
                   <Input
-                    id="expiry"
-                    type="datetime-local"
-                    value={newUserExpiry}
-                    onChange={(e) => setNewUserExpiry(e.target.value)}
+                    id="email"
+                    type="email"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                    placeholder="user@example.com"
                   />
                 </div>
                 <Button onClick={handleAddUser} disabled={loading} className="w-full">
@@ -266,12 +246,12 @@ export default function Admin() {
                       />
                     </div>
                     <div>
-                      <Label>Expiry Date</Label>
+                      <Label>Email</Label>
                       <Input
-                        type="datetime-local"
-                        value={editingUser.expiryDate || ""}
+                        type="email"
+                        value={editingUser.email || ""}
                         onChange={(e) =>
-                          setEditingUser({ ...editingUser, expiryDate: e.target.value || null })
+                          setEditingUser({ ...editingUser, email: e.target.value || undefined })
                         }
                       />
                     </div>
@@ -281,7 +261,7 @@ export default function Admin() {
                           handleUpdateUser(
                             editingUser.id,
                             editingUser.name,
-                            editingUser.expiryDate
+                            editingUser.email
                           )
                         }
                         disabled={loading}
@@ -301,16 +281,20 @@ export default function Admin() {
                   <div className="flex items-start justify-between">
                     <div className="space-y-1">
                       <div className="font-semibold text-lg">{user.name}</div>
+                      {user.email && (
+                        <div className="text-sm text-muted-foreground">{user.email}</div>
+                      )}
                       <div className="flex items-center gap-2">
-                        <code className="bg-muted px-2 py-1 rounded text-sm font-mono">
-                          {user.code}
+                        <span className="text-xs text-muted-foreground">ID:</span>
+                        <code className="bg-muted px-2 py-1 rounded text-xs font-mono">
+                          {user.id.slice(0, 12)}...
                         </code>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => copyToClipboard(user.code)}
+                          onClick={() => copyToClipboard(user.id)}
                         >
-                          {copiedCode === user.code ? (
+                          {copiedId === user.id ? (
                             <Check size={16} className="text-green-500" />
                           ) : (
                             <Copy size={16} />
@@ -318,13 +302,8 @@ export default function Admin() {
                         </Button>
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        Created: {new Date(user.createdAt).toLocaleString()}
+                        Role: {user.role} | Created: {new Date(user.createdAt).toLocaleString()}
                       </div>
-                      {user.expiryDate && (
-                        <div className="text-sm text-muted-foreground">
-                          Expires: {new Date(user.expiryDate).toLocaleString()}
-                        </div>
-                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button
