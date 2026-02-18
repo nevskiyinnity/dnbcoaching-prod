@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
@@ -5,6 +6,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { Resend } from 'resend';
+
+// Initialize Sentry before anything else
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || "",
+  tracesSampleRate: 0.1,
+  enabled: !!process.env.SENTRY_DSN,
+});
 import { getAllUsers, addUser, updateUser, deleteUser, generateCode, isCodeValid, getSetting, updateSetting } from './db.js';
 import { hashPassword, verifyPassword, signToken, checkAdminAuth } from './auth.js';
 import { logger } from './logger.js';
@@ -484,6 +492,9 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
+
+// Sentry error handler — must be after all routes and before other error handlers
+Sentry.setupExpressErrorHandler(app);
 
 // Catch-all for SPA handling (only in non-serverless mode)
 if (!process.env.VERCEL) {
