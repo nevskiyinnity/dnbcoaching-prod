@@ -1,30 +1,53 @@
 import { useState, useEffect, useRef } from 'react';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Web Speech API types not in default lib; will fix in Phase 3
-type SpeechRecognitionAny = any;
+// Web Speech API types (vendor-prefixed)
+interface SpeechRecognitionEvent {
+    results: { 0: { 0: { transcript: string } } };
+}
+
+interface SpeechRecognitionErrorEvent {
+    error: string;
+}
+
+interface SpeechRecognitionInstance {
+    continuous: boolean;
+    interimResults: boolean;
+    lang: string;
+    onresult: ((event: SpeechRecognitionEvent) => void) | null;
+    onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+    onend: (() => void) | null;
+    start(): void;
+    stop(): void;
+}
+
+declare global {
+    interface Window {
+        SpeechRecognition?: new () => SpeechRecognitionInstance;
+        webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
+    }
+}
 
 export function useVoiceInput() {
     const [isListening, setIsListening] = useState(false);
     const [transcript, setTranscript] = useState('');
-    const recognitionRef = useRef<SpeechRecognitionAny | null>(null);
+    const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
     useEffect(() => {
-        // @ts-expect-error — Web Speech API vendor-prefixed; will type in Phase 3
         if (typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
-            // @ts-expect-error — Web Speech API vendor-prefixed
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) return;
             recognitionRef.current = new SpeechRecognition();
             recognitionRef.current.continuous = false;
             recognitionRef.current.interimResults = false;
             recognitionRef.current.lang = 'nl-NL'; // Default to Dutch
 
-            recognitionRef.current.onresult = (event: { results: { 0: { 0: { transcript: string } } } }) => {
+            recognitionRef.current.onresult = (event) => {
                 const transcript = event.results[0][0].transcript;
                 setTranscript(transcript);
                 setIsListening(false);
             };
 
-            recognitionRef.current.onerror = (event: { error: string }) => {
+            recognitionRef.current.onerror = (event) => {
                 console.error("Speech recognition error", event.error);
                 setIsListening(false);
             };

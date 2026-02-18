@@ -1,12 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 
+export interface SyncData {
+    gamification?: { streak: number; score: number; badges: number; lastActive: string | null };
+    chatHistory?: unknown[];
+    [key: string]: unknown;
+}
+
 export function useSync(userCode: string | null) {
     const [synced, setSynced] = useState(false);
-    const [userData, setUserData] = useState<any>({});
+    const [userData, setUserData] = useState<SyncData>({});
 
     // Use a ref to keep track of the latest userData without triggering re-renders or stale closures in callbacks
-    const userDataRef = useRef<any>({});
+    const userDataRef = useRef<SyncData>({});
 
     // Update ref when state changes (from down-sync)
     useEffect(() => {
@@ -46,7 +52,7 @@ export function useSync(userCode: string | null) {
     }, [userCode]);
 
     // 2. Up-Sync: Update one key, merge with CURRENT ref data, save to server
-    const syncUp = useCallback(async (key: string, value: any) => {
+    const syncUp = useCallback(async (key: string, value: unknown) => {
         if (!userCode) return;
 
         try {
