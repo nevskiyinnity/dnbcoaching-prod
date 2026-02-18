@@ -104,19 +104,6 @@ export function isCodeValid(code) {
     const clean = (code || '').trim().toUpperCase();
     if (!clean) return { valid: false, reason: 'Invalid code' };
 
-    // Hardcoded dev code
-    if (clean === 'DEVELOPMENTTESTING') {
-        return {
-            valid: true,
-            user: {
-                id: 'dev-user',
-                name: 'Dev Tester',
-                code: 'DEVELOPMENTTESTING',
-                expiryDate: null
-            }
-        };
-    }
-
     const user = getUserByCode(clean);
     if (!user) return { valid: false, reason: 'Invalid code' };
 
