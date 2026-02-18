@@ -4,7 +4,7 @@ import { coachMedia } from '@/lib/coachMedia';
 
 export function VideoBlock({ id }: { id: keyof typeof coachMedia }) {
     const media = coachMedia[id];
-    if (!media) return null;
+    if (!media || !media.youtubeId) return null;
     return (
         <div className="my-2">
             <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground"><Video size={14} /> Coach video: {media.title}</div>
