@@ -27,8 +27,8 @@ export default function Admin() {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   useEffect(() => {
-    const storedAuth = sessionStorage.getItem("admin_auth");
-    if (storedAuth === "DNBCoach") {
+    const token = sessionStorage.getItem("admin_token");
+    if (token) {
       setAuthenticated(true);
       loadUsers();
     }
@@ -37,21 +37,21 @@ export default function Admin() {
   async function handleLogin() {
     setLoading(true);
     try {
-      const resp = await fetch("/api/admin/auth", {
+      const resp = await fetch("/api/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
       const data = await resp.json();
 
-      if (data.success) {
-        sessionStorage.setItem("admin_auth", password);
+      if (data.success && data.token) {
+        sessionStorage.setItem("admin_token", data.token);
         setAuthenticated(true);
         loadUsers();
       } else {
         toast.error("Incorrect password");
       }
-    } catch (e) {
+    } catch {
       toast.error("Login failed");
     } finally {
       setLoading(false);
@@ -60,7 +60,7 @@ export default function Admin() {
 
   async function loadUsers() {
     try {
-      const token = sessionStorage.getItem("admin_auth");
+      const token = sessionStorage.getItem("admin_token");
       const resp = await fetch("/api/admin/users", {
         headers: { "Authorization": `Bearer ${token}` },
       });
@@ -82,7 +82,7 @@ export default function Admin() {
 
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("admin_auth");
+      const token = sessionStorage.getItem("admin_token");
       const resp = await fetch("/api/admin/users", {
         method: "POST",
         headers: {
@@ -113,7 +113,7 @@ export default function Admin() {
   async function handleUpdateUser(id: string, name: string, expiryDate: string | null) {
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("admin_auth");
+      const token = sessionStorage.getItem("admin_token");
       const resp = await fetch("/api/admin/users", {
         method: "PUT",
         headers: {
@@ -140,7 +140,7 @@ export default function Admin() {
 
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("admin_auth");
+      const token = sessionStorage.getItem("admin_token");
       const resp = await fetch("/api/admin/users", {
         method: "DELETE",
         headers: {
