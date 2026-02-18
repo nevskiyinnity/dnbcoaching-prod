@@ -12,6 +12,19 @@ import { logger } from './logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function isValidImageUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    // Allow base64 data URLs for images only
+    if (url.startsWith('data:image/')) return true;
+    // Allow HTTPS URLs only
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
@@ -272,6 +285,9 @@ app.post('/api/chat', async (req, res) => {
 
         // Handle image if present (attach to the last user message or add as new)
         const { image } = req.body;
+        if (image && !isValidImageUrl(image)) {
+            return res.status(400).json({ error: 'Invalid image URL format' });
+        }
         if (image) {
             // New multimodal message logic
             const lastMsg = userMessages[userMessages.length - 1];
