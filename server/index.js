@@ -13,6 +13,8 @@ Sentry.init({
   tracesSampleRate: 0.1,
   enabled: !!process.env.SENTRY_DSN,
 });
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
 import { getAllUsers, addUser, updateUser, deleteUser, generateCode, isCodeValid, getSetting, updateSetting } from './db.js';
 import { hashPassword, verifyPassword, signToken, checkAdminAuth } from './auth.js';
 import { logger } from './logger.js';
@@ -133,11 +135,35 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
 
-// --- Rate Limiting ---
-// Generic rate limiter factory. Each limiter uses an in-memory Map with
-// inline cleanup on every check — suitable for serverless where timers
-// may not survive across invocations.
+// --- Rate Limiting (Upstash Redis with in-memory fallback) ---
 
+const upstashRedis = process.env.UPSTASH_REDIS_REST_URL
+    ? new Redis({
+          url: process.env.UPSTASH_REDIS_REST_URL,
+          token: process.env.UPSTASH_REDIS_REST_TOKEN,
+      })
+    : undefined;
+
+// Upstash rate limiters (only created when Redis is configured)
+const chatUpstashLimiter = upstashRedis
+    ? new Ratelimit({
+          redis: upstashRedis,
+          limiter: Ratelimit.slidingWindow(20, '300 s'),
+          analytics: true,
+          prefix: 'dnb-coaching:chat-ratelimit',
+      })
+    : null;
+
+const adminLoginUpstashLimiter = upstashRedis
+    ? new Ratelimit({
+          redis: upstashRedis,
+          limiter: Ratelimit.slidingWindow(5, '900 s'),
+          analytics: true,
+          prefix: 'dnb-coaching:admin-login-ratelimit',
+      })
+    : null;
+
+// In-memory fallback rate limiter factory (used when Upstash not configured)
 const RATE_LIMIT_MAX_ENTRIES = 10000;
 
 function createRateLimiter(windowMs, maxRequests) {
@@ -167,20 +193,37 @@ function createRateLimiter(windowMs, maxRequests) {
     };
 }
 
-// Chat rate limit: 20 requests per 5 minutes per access code
-const checkChatRateLimit = createRateLimiter(5 * 60 * 1000, 20);
+// In-memory fallback limiters
+const inMemoryChatLimiter = createRateLimiter(5 * 60 * 1000, 20);
+const inMemoryAdminLoginLimiter = createRateLimiter(15 * 60 * 1000, 5);
 
-// Admin login rate limit: 5 attempts per 15 minutes per IP
-const ADMIN_LOGIN_RATE_WINDOW = 15 * 60 * 1000;
-const ADMIN_LOGIN_RATE_MAX = 5;
-const checkAdminLoginRateLimit = createRateLimiter(ADMIN_LOGIN_RATE_WINDOW, ADMIN_LOGIN_RATE_MAX);
+// Unified rate limit check: tries Upstash first, falls back to in-memory
+async function checkChatRateLimit(key) {
+    if (!chatUpstashLimiter) return inMemoryChatLimiter(key);
+    try {
+        const { success } = await chatUpstashLimiter.limit(key);
+        return !success;
+    } catch {
+        return inMemoryChatLimiter(key);
+    }
+}
+
+async function checkAdminLoginRateLimit(key) {
+    if (!adminLoginUpstashLimiter) return inMemoryAdminLoginLimiter(key);
+    try {
+        const { success } = await adminLoginUpstashLimiter.limit(key);
+        return !success;
+    } catch {
+        return inMemoryAdminLoginLimiter(key);
+    }
+}
 
 // --- API Routes ---
 
 // Admin Login — returns JWT (rate limited: 5 attempts per 15 min per IP)
 app.post('/api/admin/login', async (req, res) => {
     const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
-    if (checkAdminLoginRateLimit(clientIp)) {
+    if (await checkAdminLoginRateLimit(clientIp)) {
         return res.status(429).json({ success: false, message: 'Too many login attempts. Please try again later.' });
     }
 
@@ -388,7 +431,7 @@ app.post('/api/chat', async (req, res) => {
         const validation = await isCodeValid(codestr);
         if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
-        if (checkChatRateLimit(codestr)) {
+        if (await checkChatRateLimit(codestr)) {
             return res.status(429).json({ error: 'Too many requests. Please try again later.' });
         }
 
