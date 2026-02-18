@@ -1,44 +1,52 @@
 import express from 'express';
-import cors from 'cors'; // Added cors for development/testing flexibility
+import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import 'dotenv/config'; // Load .env file
+import 'dotenv/config';
 import { Resend } from 'resend';
 import { getAllUsers, addUser, updateUser, deleteUser, generateCode, isCodeValid, getSetting, updateSetting } from './db.js';
+import { hashPassword, verifyPassword, signToken, checkAdminAuth } from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'DNBCoach';
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const RESEND_API_KEY = process.env.VITE_RESEND_API_KEY;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: process.env.ALLOWED_ORIGINS?.split(',') ?? ['http://localhost:8080'],
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
 
-// Helper for admin auth
-const checkAdminAuth = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader) return res.status(401).json({ message: 'Unauthorized' });
-    const token = authHeader.replace('Bearer ', '');
-    if (token !== ADMIN_PASSWORD) return res.status(401).json({ message: 'Unauthorized' });
-    next();
-};
-
 // --- API Routes ---
 
-// Admin Auth
-app.post('/api/admin/auth', (req, res) => {
+// Admin Login — returns JWT
+app.post('/api/admin/login', async (req, res) => {
     const { password } = req.body;
-    if (password === ADMIN_PASSWORD) {
-        return res.status(200).json({ success: true });
+    if (!password) {
+        return res.status(400).json({ success: false, message: 'Password required' });
     }
-    return res.status(401).json({ success: false, message: 'Invalid password' });
+
+    try {
+        // If no hash is configured, hash-compare against the plaintext env var as fallback
+        const storedHash = ADMIN_PASSWORD_HASH || await hashPassword(process.env.ADMIN_PASSWORD || '');
+        const valid = await verifyPassword(password, storedHash);
+
+        if (!valid) {
+            return res.status(401).json({ success: false, message: 'Invalid password' });
+        }
+
+        const token = signToken({ role: 'admin' });
+        return res.status(200).json({ success: true, token });
+    } catch {
+        return res.status(500).json({ success: false, message: 'Authentication error' });
+    }
 });
 
 // Admin Users CRUD
