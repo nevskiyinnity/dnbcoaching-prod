@@ -116,6 +116,16 @@ app.post('/api/admin/users/reset', checkAdminAuth, (req, res) => {
     }
 });
 
+// Escape HTML special characters to prevent XSS in email templates
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Contact Form
 app.post('/api/contact', async (req, res) => {
     const { name, email, message } = req.body;
@@ -133,12 +143,16 @@ app.post('/api/contact', async (req, res) => {
     const resend = new Resend(RESEND_API_KEY);
 
     try {
+        const safeName = escapeHtml(name);
+        const safeEmail = escapeHtml(email);
+        const safeMessage = escapeHtml(message);
+
         const { data, error } = await resend.emails.send({
             from: 'site@dnbcoaching.com',
-            to: ['info@dnbcoaching.com'], // Ensure this is configured
-            subject: `New message from ${name}`,
+            to: ['info@dnbcoaching.com'],
+            subject: `New message from ${safeName}`,
             replyTo: email,
-            html: `<p>Name: ${name}</p><p>Email: ${email}</p><p>Message: ${message}</p>`,
+            html: `<p>Name: ${safeName}</p><p>Email: ${safeEmail}</p><p>Message: ${safeMessage}</p>`,
         });
 
         if (error) {
