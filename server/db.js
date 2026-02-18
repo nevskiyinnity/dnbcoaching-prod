@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { logger } from './logger.js';
 
 // Ensure data directory exists
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -28,10 +29,10 @@ try {
     const hasData = columns.some(c => c.name === 'data');
     if (!hasData) {
         db.exec('ALTER TABLE users ADD COLUMN data TEXT');
-        console.log('Migrated DB: Added data column');
+        logger.info('Migrated DB: Added data column');
     }
 } catch (e) {
-    console.error('Migration error:', e);
+    logger.error('Migration error', e);
 }
 
 export function getAllUsers() {
