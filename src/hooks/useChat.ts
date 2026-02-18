@@ -187,9 +187,9 @@ export function useChat(userCode: string | null, userName: string, lang: 'nl' | 
             localStorage.setItem("bot_history_v2", JSON.stringify(finalHistory));
             syncUp('chatHistory', finalHistory);
 
-        } catch (err: any) {
+        } catch (err) {
             console.error("Chat error:", err);
-            toast.error("Error sending message: " + err.message);
+            toast.error("Error sending message: " + (err instanceof Error ? err.message : String(err)));
         } finally {
             setLoading(false);
         }

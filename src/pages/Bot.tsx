@@ -134,7 +134,6 @@ export default function Bot() {
                       <div className="pr-8">
                         {m.blocks.map((b, i) =>
                           b.type === "video" ? (
-                            // @ts-expect-error — MessageBlock.id is string, will narrow in Phase 3
                             <VideoBlock key={i} id={b.id} />
                           ) : (
                             <p key={i} className="whitespace-pre-wrap leading-relaxed text-sm">{b.text}</p>
@@ -153,7 +152,6 @@ export default function Bot() {
                   <ChatBubble key={m.id} role={m.role as "user" | "assistant"} onPin={() => togglePin(m)} isPinned={isPinned(m.id)}>
                     {m.blocks.map((b, i) =>
                       b.type === "video" ? (
-                        // @ts-expect-error — MessageBlock.id is string, will narrow in Phase 3
                         <VideoBlock key={i} id={b.id} />
                       ) : (
                         <p key={i} className="whitespace-pre-wrap leading-relaxed">{b.text}</p>

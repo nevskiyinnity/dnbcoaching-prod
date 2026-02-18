@@ -2,8 +2,8 @@ import React from 'react';
 import { Video } from 'lucide-react';
 import { coachMedia } from '@/lib/coachMedia';
 
-export function VideoBlock({ id }: { id: keyof typeof coachMedia }) {
-    const media = coachMedia[id];
+export function VideoBlock({ id }: { id: string }) {
+    const media = coachMedia[id as keyof typeof coachMedia];
     if (!media || !media.youtubeId) return null;
     return (
         <div className="my-2">
