@@ -255,3 +255,46 @@ describe('checkAdminAuth', () => {
         expect(next).not.toHaveBeenCalled();
     });
 });
+
+// ---------------------------------------------------------------------------
+// JWT_SECRET required: getJwtSecret throws if JWT_SECRET is not set
+// ---------------------------------------------------------------------------
+describe('JWT_SECRET environment variable requirement', () => {
+    it('throws an error when JWT_SECRET is not set', () => {
+        const originalSecret = process.env.JWT_SECRET;
+        delete process.env.JWT_SECRET;
+
+        try {
+            // signToken internally calls getJwtSecret which should throw
+            expect(() => signToken({ role: 'admin' })).toThrow('JWT_SECRET environment variable is required');
+        } finally {
+            // Restore the secret so other tests continue to work
+            process.env.JWT_SECRET = originalSecret;
+        }
+    });
+
+    it('throws an error when JWT_SECRET is empty string', () => {
+        const originalSecret = process.env.JWT_SECRET;
+        process.env.JWT_SECRET = '';
+
+        try {
+            // Empty string is falsy, so getJwtSecret should throw
+            expect(() => signToken({ role: 'admin' })).toThrow('JWT_SECRET environment variable is required');
+        } finally {
+            process.env.JWT_SECRET = originalSecret;
+        }
+    });
+
+    it('verifyToken also throws when JWT_SECRET is not set', () => {
+        const originalSecret = process.env.JWT_SECRET;
+        // First sign a token with the secret present
+        const token = signToken({ role: 'admin' });
+
+        delete process.env.JWT_SECRET;
+        try {
+            expect(() => verifyToken(token)).toThrow('JWT_SECRET environment variable is required');
+        } finally {
+            process.env.JWT_SECRET = originalSecret;
+        }
+    });
+});

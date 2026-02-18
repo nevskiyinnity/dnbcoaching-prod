@@ -437,3 +437,371 @@ describe('escapeHtml (XSS prevention in email templates)', () => {
         expect(escapeHtml(null)).toBe('null');
     });
 });
+
+// ---------------------------------------------------------------------------
+// SSRF Prevention: isValidImageUrl (from server/index.js)
+// ---------------------------------------------------------------------------
+describe('isValidImageUrl (SSRF prevention)', () => {
+    // Reimplementing the function from server/index.js for direct testing
+    function isValidImageUrl(url) {
+        if (!url || typeof url !== 'string') return false;
+        // Allow base64 data URLs for images only
+        if (url.startsWith('data:image/')) return true;
+        // Allow HTTPS URLs only
+        try {
+            const parsed = new URL(url);
+            return parsed.protocol === 'https:';
+        } catch {
+            return false;
+        }
+    }
+
+    it('accepts data:image/png base64 URLs', () => {
+        expect(isValidImageUrl('data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==')).toBe(true);
+    });
+
+    it('accepts data:image/jpeg base64 URLs', () => {
+        expect(isValidImageUrl('data:image/jpeg;base64,/9j/4AAQSkZJRg==')).toBe(true);
+    });
+
+    it('accepts data:image/gif base64 URLs', () => {
+        expect(isValidImageUrl('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP==')).toBe(true);
+    });
+
+    it('accepts data:image/webp base64 URLs', () => {
+        expect(isValidImageUrl('data:image/webp;base64,UklGRlYAAABXRUJQ')).toBe(true);
+    });
+
+    it('accepts HTTPS URLs', () => {
+        expect(isValidImageUrl('https://example.com/image.png')).toBe(true);
+    });
+
+    it('accepts HTTPS URLs with paths and query params', () => {
+        expect(isValidImageUrl('https://cdn.example.com/images/photo.jpg?w=800&h=600')).toBe(true);
+    });
+
+    it('rejects HTTP URLs (no plaintext http)', () => {
+        expect(isValidImageUrl('http://example.com/image.png')).toBe(false);
+    });
+
+    it('rejects file:// protocol URLs', () => {
+        expect(isValidImageUrl('file:///etc/passwd')).toBe(false);
+    });
+
+    it('rejects file:// protocol for Windows paths', () => {
+        expect(isValidImageUrl('file:///C:/Windows/system32/config/sam')).toBe(false);
+    });
+
+    it('rejects javascript: protocol URLs', () => {
+        expect(isValidImageUrl('javascript:alert(1)')).toBe(false);
+    });
+
+    it('rejects ftp:// protocol URLs', () => {
+        expect(isValidImageUrl('ftp://server/file')).toBe(false);
+    });
+
+    it('rejects data: URLs that are not images (data:text/html)', () => {
+        expect(isValidImageUrl('data:text/html;base64,PHNjcmlwdD4=')).toBe(false);
+    });
+
+    it('rejects data:application/javascript URLs', () => {
+        expect(isValidImageUrl('data:application/javascript;base64,YWxlcnQoMSk=')).toBe(false);
+    });
+
+    it('returns false for null input', () => {
+        expect(isValidImageUrl(null)).toBe(false);
+    });
+
+    it('returns false for undefined input', () => {
+        expect(isValidImageUrl(undefined)).toBe(false);
+    });
+
+    it('returns false for empty string', () => {
+        expect(isValidImageUrl('')).toBe(false);
+    });
+
+    it('returns false for non-string input (number)', () => {
+        expect(isValidImageUrl(12345)).toBe(false);
+    });
+
+    it('returns false for non-string input (object)', () => {
+        expect(isValidImageUrl({ url: 'https://evil.com' })).toBe(false);
+    });
+
+    it('returns false for a bare string with no protocol', () => {
+        expect(isValidImageUrl('example.com/image.png')).toBe(false);
+    });
+
+    it('rejects gopher:// protocol', () => {
+        expect(isValidImageUrl('gopher://internal:70/')).toBe(false);
+    });
+
+    it('rejects dict:// protocol', () => {
+        expect(isValidImageUrl('dict://attacker:11111/')).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Rate Limiting: checkChatRateLimit (from server/index.js)
+// ---------------------------------------------------------------------------
+describe('checkChatRateLimit (rate limiting)', () => {
+    // Reimplementing the rate-limiting logic from server/index.js for direct testing
+    const chatRateLimit = new Map();
+    const CHAT_RATE_WINDOW = 5 * 60 * 1000; // 5 minutes
+    const CHAT_RATE_MAX = 20;
+    const CHAT_RATE_MAX_ENTRIES = 10000;
+
+    function checkChatRateLimit(code) {
+        const now = Date.now();
+        for (const [key, entry] of chatRateLimit.entries()) {
+            if (now - entry.windowStart > CHAT_RATE_WINDOW) chatRateLimit.delete(key);
+        }
+        if (chatRateLimit.size > CHAT_RATE_MAX_ENTRIES) {
+            const entries = [...chatRateLimit.entries()].sort((a, b) => a[1].windowStart - b[1].windowStart);
+            for (let i = 0; i < entries.length / 2; i++) chatRateLimit.delete(entries[i][0]);
+        }
+        const entry = chatRateLimit.get(code);
+        if (!entry || now - entry.windowStart > CHAT_RATE_WINDOW) {
+            chatRateLimit.set(code, { count: 1, windowStart: now });
+            return false;
+        }
+        entry.count++;
+        return entry.count > CHAT_RATE_MAX;
+    }
+
+    beforeEach(() => {
+        chatRateLimit.clear();
+    });
+
+    it('allows the first request', () => {
+        expect(checkChatRateLimit('USER1')).toBe(false);
+    });
+
+    it('allows requests up to the limit (20 per 5 min)', () => {
+        for (let i = 0; i < CHAT_RATE_MAX; i++) {
+            expect(checkChatRateLimit('USER2')).toBe(false);
+        }
+    });
+
+    it('blocks request #21 within the same window', () => {
+        for (let i = 0; i < CHAT_RATE_MAX; i++) {
+            checkChatRateLimit('USER3');
+        }
+        // The 21st request should be rate limited
+        expect(checkChatRateLimit('USER3')).toBe(true);
+    });
+
+    it('blocks all subsequent requests after the limit', () => {
+        for (let i = 0; i < CHAT_RATE_MAX; i++) {
+            checkChatRateLimit('USER4');
+        }
+        // Requests 21, 22, 23 should all be blocked
+        expect(checkChatRateLimit('USER4')).toBe(true);
+        expect(checkChatRateLimit('USER4')).toBe(true);
+        expect(checkChatRateLimit('USER4')).toBe(true);
+    });
+
+    it('rate limits are per-code (different codes have independent limits)', () => {
+        for (let i = 0; i < CHAT_RATE_MAX; i++) {
+            checkChatRateLimit('USER5');
+        }
+        // USER5 is now rate limited
+        expect(checkChatRateLimit('USER5')).toBe(true);
+        // USER6 should still be allowed
+        expect(checkChatRateLimit('USER6')).toBe(false);
+    });
+
+    it('allows requests again after the window expires', () => {
+        // Manually set a window that has already expired
+        chatRateLimit.set('USER7', {
+            count: CHAT_RATE_MAX + 5,
+            windowStart: Date.now() - CHAT_RATE_WINDOW - 1000, // expired 1 second ago
+        });
+
+        // Should be allowed because window has expired
+        expect(checkChatRateLimit('USER7')).toBe(false);
+    });
+
+    it('resets the counter after window expiry', () => {
+        chatRateLimit.set('USER8', {
+            count: CHAT_RATE_MAX,
+            windowStart: Date.now() - CHAT_RATE_WINDOW - 1, // just expired
+        });
+
+        // First request after expiry starts a new window
+        expect(checkChatRateLimit('USER8')).toBe(false);
+        // Should be on count 1 now, so 19 more are allowed
+        const entry = chatRateLimit.get('USER8');
+        expect(entry.count).toBe(1);
+    });
+
+    it('cleans up expired entries on each call', () => {
+        chatRateLimit.set('EXPIRED1', {
+            count: 5,
+            windowStart: Date.now() - CHAT_RATE_WINDOW - 10000,
+        });
+        chatRateLimit.set('EXPIRED2', {
+            count: 10,
+            windowStart: Date.now() - CHAT_RATE_WINDOW - 5000,
+        });
+
+        // Make a request with a fresh code, which triggers cleanup
+        checkChatRateLimit('FRESH1');
+
+        // Expired entries should have been cleaned up
+        expect(chatRateLimit.has('EXPIRED1')).toBe(false);
+        expect(chatRateLimit.has('EXPIRED2')).toBe(false);
+        expect(chatRateLimit.has('FRESH1')).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Message Validation: MAX_MESSAGE_LENGTH and MAX_MESSAGES (from server/index.js)
+// ---------------------------------------------------------------------------
+describe('Message validation (length and count limits)', () => {
+    const MAX_MESSAGE_LENGTH = 4000;
+    const MAX_MESSAGES = 50;
+
+    // Replicating the validation logic from the /api/chat endpoint
+    function validateMessages(rawMessages) {
+        const userMessages = Array.isArray(rawMessages)
+            ? rawMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => ({ role: m.role, content: m.content }))
+            : [];
+
+        if (userMessages.length > MAX_MESSAGES) {
+            return { valid: false, error: `Too many messages. Maximum ${MAX_MESSAGES} allowed.` };
+        }
+        for (const msg of userMessages) {
+            if (typeof msg.content === 'string' && msg.content.length > MAX_MESSAGE_LENGTH) {
+                return { valid: false, error: `Message too long. Maximum ${MAX_MESSAGE_LENGTH} characters.` };
+            }
+        }
+        return { valid: true, messages: userMessages };
+    }
+
+    it('accepts a message within 4000 characters', () => {
+        const messages = [{ role: 'user', content: 'a'.repeat(4000) }];
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(true);
+    });
+
+    it('rejects a message exceeding 4000 characters', () => {
+        const messages = [{ role: 'user', content: 'a'.repeat(4001) }];
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('4000');
+    });
+
+    it('accepts exactly 50 messages', () => {
+        const messages = Array.from({ length: 50 }, (_, i) => ({
+            role: i % 2 === 0 ? 'user' : 'assistant',
+            content: `Message ${i}`,
+        }));
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(true);
+        expect(result.messages).toHaveLength(50);
+    });
+
+    it('rejects 51 messages', () => {
+        const messages = Array.from({ length: 51 }, (_, i) => ({
+            role: i % 2 === 0 ? 'user' : 'assistant',
+            content: `Message ${i}`,
+        }));
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('50');
+    });
+
+    it('rejects when any single message in a batch exceeds the limit', () => {
+        const messages = [
+            { role: 'user', content: 'Short message' },
+            { role: 'assistant', content: 'Also short' },
+            { role: 'user', content: 'x'.repeat(4001) }, // This one is too long
+        ];
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('4000');
+    });
+
+    it('accepts messages at exactly the boundary (4000 chars)', () => {
+        const messages = [
+            { role: 'user', content: 'b'.repeat(4000) },
+            { role: 'assistant', content: 'c'.repeat(4000) },
+        ];
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(true);
+    });
+
+    it('filters out system/function roles before counting', () => {
+        const messages = Array.from({ length: 50 }, (_, i) => ({
+            role: i % 2 === 0 ? 'user' : 'assistant',
+            content: `Message ${i}`,
+        }));
+        // Add system messages that should be filtered out
+        messages.push({ role: 'system', content: 'System message' });
+        messages.push({ role: 'function', content: 'Function result' });
+
+        const result = validateMessages(messages);
+        // Only 50 user/assistant messages counted, system/function are filtered
+        expect(result.valid).toBe(true);
+        expect(result.messages).toHaveLength(50);
+    });
+
+    it('handles empty array gracefully', () => {
+        const result = validateMessages([]);
+        expect(result.valid).toBe(true);
+        expect(result.messages).toHaveLength(0);
+    });
+
+    it('handles non-array input gracefully', () => {
+        const result = validateMessages(null);
+        expect(result.valid).toBe(true);
+        expect(result.messages).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// SessionStorage verification: useBotAuth uses sessionStorage, not localStorage
+// ---------------------------------------------------------------------------
+describe('useBotAuth sessionStorage verification', () => {
+    let hookSource;
+
+    beforeAll(async () => {
+        const fs = await vi.importActual('fs');
+        const path = await vi.importActual('path');
+        const hookPath = path.join(__dirname, '..', 'src', 'hooks', 'useBotAuth.ts');
+        hookSource = fs.readFileSync(hookPath, 'utf-8');
+    });
+
+    it('uses sessionStorage for storing access codes', () => {
+        expect(hookSource).toContain('sessionStorage');
+    });
+
+    it('does NOT use localStorage anywhere in the hook', () => {
+        expect(hookSource).not.toContain('localStorage');
+    });
+
+    it('stores bot_user_code in sessionStorage', () => {
+        expect(hookSource).toContain('sessionStorage.setItem("bot_user_code"');
+    });
+
+    it('stores bot_user_name in sessionStorage', () => {
+        expect(hookSource).toContain('sessionStorage.setItem("bot_user_name"');
+    });
+
+    it('stores bot_login_ts in sessionStorage', () => {
+        expect(hookSource).toContain('sessionStorage.setItem("bot_login_ts"');
+    });
+
+    it('clears all session keys on logout', () => {
+        expect(hookSource).toContain('sessionStorage.removeItem("bot_user_code")');
+        expect(hookSource).toContain('sessionStorage.removeItem("bot_user_name")');
+        expect(hookSource).toContain('sessionStorage.removeItem("bot_name")');
+        expect(hookSource).toContain('sessionStorage.removeItem("bot_lang")');
+    });
+
+    it('reads initial state from sessionStorage', () => {
+        expect(hookSource).toContain('sessionStorage.getItem("bot_user_code")');
+        expect(hookSource).toContain('sessionStorage.getItem("bot_user_name")');
+    });
+});
