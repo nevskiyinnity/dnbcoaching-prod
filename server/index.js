@@ -29,6 +29,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (!OPENAI_API_KEY) {
+    logger.warn('OPENAI_API_KEY not set — AI features will be unavailable');
+}
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const RESEND_API_KEY = process.env.VITE_RESEND_API_KEY;
 
