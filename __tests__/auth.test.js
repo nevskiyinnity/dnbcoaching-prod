@@ -10,17 +10,25 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Mock better-sqlite3 before importing anything that uses db.js
-vi.mock('better-sqlite3', () => {
-    const mockDb = {
-        exec: vi.fn(),
-        prepare: vi.fn(() => ({
-            all: vi.fn(() => []),
-            get: vi.fn(() => null),
-            run: vi.fn(() => ({ changes: 0 })),
-        })),
+// Mock @prisma/client before importing anything that uses db.js
+vi.mock('@prisma/client', () => {
+    const mockPrisma = {
+        user: {
+            findMany: vi.fn(() => Promise.resolve([])),
+            findUnique: vi.fn(() => Promise.resolve(null)),
+            create: vi.fn(() => Promise.resolve({})),
+            update: vi.fn(() => Promise.resolve({})),
+            delete: vi.fn(() => Promise.resolve({})),
+        },
+        setting: {
+            findUnique: vi.fn(() => Promise.resolve(null)),
+            upsert: vi.fn(() => Promise.resolve({})),
+        },
     };
-    return { default: vi.fn(() => mockDb) };
+    function PrismaClient() {
+        return mockPrisma;
+    }
+    return { PrismaClient };
 });
 
 // Mock fs.existsSync and fs.mkdirSync for the db.js DATA_DIR creation
@@ -67,7 +75,7 @@ describe('Security regression: no backdoor in db.js', () => {
     it('isCodeValid function does not have hardcoded valid codes', () => {
         // Extract the isCodeValid function body
         const fnMatch = dbSource.match(
-            /export\s+function\s+isCodeValid\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+            /export\s+(?:async\s+)?function\s+isCodeValid\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
         );
         expect(fnMatch).not.toBeNull();
         const fnBody = fnMatch[0];
@@ -82,7 +90,7 @@ describe('Security regression: no backdoor in db.js', () => {
 
     it('code validation checks expiry dates', () => {
         const fnMatch = dbSource.match(
-            /export\s+function\s+isCodeValid\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+            /export\s+(?:async\s+)?function\s+isCodeValid\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
         );
         expect(fnMatch).not.toBeNull();
         const fnBody = fnMatch[0];

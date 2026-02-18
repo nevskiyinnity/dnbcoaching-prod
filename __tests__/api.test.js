@@ -1,73 +1,86 @@
 import { vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
-// Mock infrastructure: better-sqlite3, fs, and modules used by the server
+// Mock infrastructure: Prisma client mock for all database operations
 // ---------------------------------------------------------------------------
 
-// Use vi.hoisted so these variables are available inside vi.mock factories
-// (vi.mock calls are hoisted to the top of the file by vitest)
-const { mockPrepare, mockUsers, mockSettings } = vi.hoisted(() => {
+const { mockUsers, mockSettings, mockPrisma } = vi.hoisted(() => {
     const mockUsers = new Map();
     const mockSettings = new Map();
 
-    const mockPrepare = vi.fn((sql) => {
-        return {
-            all: vi.fn(() => Array.from(mockUsers.values())),
-            get: vi.fn((...args) => {
-                if (sql.includes('FROM users WHERE code')) {
-                    return mockUsers.get(args[0]) || null;
+    const mockPrisma = {
+        user: {
+            findMany: vi.fn(() => Promise.resolve(Array.from(mockUsers.values()))),
+            findUnique: vi.fn(({ where }) => {
+                if (where.code) {
+                    return Promise.resolve(mockUsers.get(where.code) || null);
                 }
-                if (sql.includes('FROM users WHERE id')) {
+                if (where.id) {
                     for (const u of mockUsers.values()) {
-                        if (u.id === args[0]) return u;
+                        if (u.id === where.id) return Promise.resolve(u);
                     }
-                    return null;
+                    return Promise.resolve(null);
                 }
-                if (sql.includes('FROM settings WHERE key')) {
-                    const val = mockSettings.get(args[0]);
-                    return val !== undefined ? { value: JSON.stringify(val) } : null;
-                }
-                return null;
+                return Promise.resolve(null);
             }),
-            run: vi.fn((...args) => {
-                if (sql.includes('INSERT INTO users')) {
-                    const user = { id: args[0], name: args[1], code: args[2], expiryDate: args[3], createdAt: args[4], data: args[5] };
-                    mockUsers.set(user.code, user);
-                    return { changes: 1 };
-                }
-                if (sql.includes('DELETE FROM users')) {
-                    for (const [code, u] of mockUsers.entries()) {
-                        if (u.id === args[0]) { mockUsers.delete(code); return { changes: 1 }; }
+            create: vi.fn(({ data }) => {
+                mockUsers.set(data.code, { ...data });
+                return Promise.resolve(data);
+            }),
+            update: vi.fn(({ where, data }) => {
+                let user = null;
+                if (where.code) {
+                    user = mockUsers.get(where.code);
+                } else if (where.id) {
+                    for (const u of mockUsers.values()) {
+                        if (u.id === where.id) { user = u; break; }
                     }
-                    return { changes: 0 };
                 }
-                if (sql.includes('UPDATE users SET data')) {
-                    const user = mockUsers.get(args[1]);
-                    if (user) { user.data = args[0]; return { changes: 1 }; }
-                    return { changes: 0 };
+                if (!user) {
+                    const err = new Error('Record not found');
+                    err.code = 'P2025';
+                    return Promise.reject(err);
                 }
-                if (sql.includes('INSERT OR REPLACE INTO settings')) {
-                    mockSettings.set(args[0], JSON.parse(args[1]));
-                    return { changes: 1 };
-                }
-                return { changes: 0 };
+                Object.assign(user, data);
+                return Promise.resolve(user);
             }),
-        };
-    });
+            delete: vi.fn(({ where }) => {
+                let found = false;
+                for (const [code, u] of mockUsers.entries()) {
+                    if (u.id === where.id) {
+                        mockUsers.delete(code);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    const err = new Error('Record not found');
+                    err.code = 'P2025';
+                    return Promise.reject(err);
+                }
+                return Promise.resolve({});
+            }),
+        },
+        setting: {
+            findUnique: vi.fn(({ where }) => {
+                const val = mockSettings.get(where.key);
+                return Promise.resolve(val !== undefined ? { key: where.key, value: JSON.stringify(val) } : null);
+            }),
+            upsert: vi.fn(({ where, update, create }) => {
+                mockSettings.set(where.key, JSON.parse(create.value));
+                return Promise.resolve(create);
+            }),
+        },
+    };
 
-    return { mockPrepare, mockUsers, mockSettings };
+    return { mockUsers, mockSettings, mockPrisma };
 });
 
-vi.mock('better-sqlite3', () => {
-    const mockDb = {
-        exec: vi.fn(),
-        prepare: mockPrepare,
-    };
-    // Must use a regular function (not arrow) so it can be called with `new`
-    function MockDatabase() {
-        return mockDb;
+vi.mock('@prisma/client', () => {
+    function PrismaClient() {
+        return mockPrisma;
     }
-    return { default: MockDatabase };
+    return { PrismaClient };
 });
 
 vi.mock('fs', async () => {
@@ -99,96 +112,81 @@ import {
 describe('isCodeValid', () => {
     beforeEach(() => {
         mockUsers.clear();
+        vi.restoreAllMocks();
     });
 
-    it('returns invalid for empty/null code', () => {
-        expect(isCodeValid('').valid).toBe(false);
-        expect(isCodeValid(null).valid).toBe(false);
-        expect(isCodeValid(undefined).valid).toBe(false);
+    it('returns invalid for empty/null code', async () => {
+        expect((await isCodeValid('')).valid).toBe(false);
+        expect((await isCodeValid(null)).valid).toBe(false);
+        expect((await isCodeValid(undefined)).valid).toBe(false);
     });
 
-    it('returns invalid when code does not exist in database', () => {
-        const result = isCodeValid('NONEXIST');
+    it('returns invalid when code does not exist in database', async () => {
+        const result = await isCodeValid('NONEXIST');
         expect(result.valid).toBe(false);
         expect(result.reason).toBe('Invalid code');
     });
 
-    it('returns valid for an existing, non-expired code', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '1',
-                name: 'Test User',
-                code: 'VALIDCDE',
-                expiryDate: null,
-                createdAt: new Date().toISOString(),
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+    it('returns valid for an existing, non-expired code', async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '1',
+            name: 'Test User',
+            code: 'VALIDCDE',
+            expiryDate: null,
+            createdAt: new Date().toISOString(),
+        });
 
-        const result = isCodeValid('VALIDCDE');
+        const result = await isCodeValid('VALIDCDE');
         expect(result.valid).toBe(true);
         expect(result.user).toBeDefined();
         expect(result.user.name).toBe('Test User');
     });
 
-    it('returns invalid for an expired code', () => {
+    it('returns invalid for an expired code', async () => {
         const pastDate = new Date(Date.now() - 86400000).toISOString(); // yesterday
 
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '2',
-                name: 'Expired User',
-                code: 'EXPRDCDE',
-                expiryDate: pastDate,
-                createdAt: new Date().toISOString(),
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '2',
+            name: 'Expired User',
+            code: 'EXPRDCDE',
+            expiryDate: pastDate,
+            createdAt: new Date().toISOString(),
+        });
 
-        const result = isCodeValid('EXPRDCDE');
+        const result = await isCodeValid('EXPRDCDE');
         expect(result.valid).toBe(false);
         expect(result.reason).toBe('Code expired');
     });
 
-    it('returns valid for a code with a future expiry date', () => {
+    it('returns valid for a code with a future expiry date', async () => {
         const futureDate = new Date(Date.now() + 86400000 * 30).toISOString(); // 30 days ahead
 
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '3',
-                name: 'Future User',
-                code: 'FUTRCDE1',
-                expiryDate: futureDate,
-                createdAt: new Date().toISOString(),
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '3',
+            name: 'Future User',
+            code: 'FUTRCDE1',
+            expiryDate: futureDate,
+            createdAt: new Date().toISOString(),
+        });
 
-        const result = isCodeValid('FUTRCDE1');
+        const result = await isCodeValid('FUTRCDE1');
         expect(result.valid).toBe(true);
     });
 
-    it('normalizes code to uppercase and trims whitespace', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn((code) => {
-                // Should receive trimmed uppercase code
-                expect(code).toBe('ABCD1234');
-                return {
-                    id: '4',
-                    name: 'Normalized User',
-                    code: 'ABCD1234',
-                    expiryDate: null,
-                    createdAt: new Date().toISOString(),
-                };
-            }),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+    it('normalizes code to uppercase and trims whitespace', async () => {
+        mockPrisma.user.findUnique.mockImplementationOnce(({ where }) => {
+            // Should receive trimmed uppercase code
+            expect(where.code).toBe('ABCD1234');
+            return Promise.resolve({
+                id: '4',
+                name: 'Normalized User',
+                code: 'ABCD1234',
+                expiryDate: null,
+                createdAt: new Date().toISOString(),
+            });
+        });
 
-        const result = isCodeValid('  abcd1234  ');
+        const result = await isCodeValid('  abcd1234  ');
         expect(result.valid).toBe(true);
     });
 });
@@ -227,25 +225,21 @@ describe('generateCode', () => {
 // Message handling / chat validation flow
 // ---------------------------------------------------------------------------
 describe('Chat API validation logic', () => {
-    it('rejects missing code', () => {
-        const result = isCodeValid('');
+    it('rejects missing code', async () => {
+        const result = await isCodeValid('');
         expect(result.valid).toBe(false);
     });
 
-    it('validates code before processing messages', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '5',
-                name: 'Chat User',
-                code: 'CHATCODE',
-                expiryDate: null,
-                createdAt: new Date().toISOString(),
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+    it('validates code before processing messages', async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '5',
+            name: 'Chat User',
+            code: 'CHATCODE',
+            expiryDate: null,
+            createdAt: new Date().toISOString(),
+        });
 
-        const validation = isCodeValid('CHATCODE');
+        const validation = await isCodeValid('CHATCODE');
         expect(validation.valid).toBe(true);
         expect(validation.user.name).toBe('Chat User');
     });
@@ -289,87 +283,79 @@ describe('Sync operations', () => {
     beforeEach(() => {
         mockUsers.clear();
         mockSettings.clear();
+        vi.restoreAllMocks();
     });
 
-    it('GET /api/sync rejects missing code (via isCodeValid)', () => {
-        const validation = isCodeValid('');
+    it('GET /api/sync rejects missing code (via isCodeValid)', async () => {
+        const validation = await isCodeValid('');
         expect(validation.valid).toBe(false);
         expect(validation.reason).toBe('Invalid code');
     });
 
-    it('GET /api/sync rejects invalid code', () => {
-        const validation = isCodeValid('NOEXIST1');
+    it('GET /api/sync rejects invalid code', async () => {
+        const validation = await isCodeValid('NOEXIST1');
         expect(validation.valid).toBe(false);
     });
 
-    it('getUserData returns null for non-existent code', () => {
-        const data = getUserData('NOCODE');
+    it('getUserData returns null for non-existent code', async () => {
+        const data = await getUserData('NOCODE');
         expect(data).toBeNull();
     });
 
-    it('getUserData returns parsed JSON data', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '10',
-                name: 'Data User',
-                code: 'DATACODE',
-                expiryDate: null,
-                createdAt: new Date().toISOString(),
-                data: JSON.stringify({ messages: ['hello'], settings: { theme: 'dark' } }),
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+    it('getUserData returns parsed JSON data', async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '10',
+            name: 'Data User',
+            code: 'DATACODE',
+            expiryDate: null,
+            createdAt: new Date().toISOString(),
+            data: JSON.stringify({ messages: ['hello'], settings: { theme: 'dark' } }),
+        });
 
-        const data = getUserData('DATACODE');
+        const data = await getUserData('DATACODE');
         expect(data).toEqual({ messages: ['hello'], settings: { theme: 'dark' } });
     });
 
-    it('getUserData returns empty object for invalid JSON', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '11',
-                name: 'Bad Data User',
-                code: 'BADDATA1',
-                expiryDate: null,
-                createdAt: new Date().toISOString(),
-                data: 'not valid json{{{',
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+    it('getUserData returns empty object for invalid JSON', async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '11',
+            name: 'Bad Data User',
+            code: 'BADDATA1',
+            expiryDate: null,
+            createdAt: new Date().toISOString(),
+            data: 'not valid json{{{',
+        });
 
-        const data = getUserData('BADDATA1');
+        const data = await getUserData('BADDATA1');
         expect(data).toEqual({});
     });
 
-    it('updateUserData returns false for non-existent code', () => {
-        const success = updateUserData('NOCODE', { key: 'value' });
+    it('updateUserData returns false for non-existent code', async () => {
+        const success = await updateUserData('NOCODE', { key: 'value' });
         expect(success).toBe(false);
     });
 
-    it('updateUserData updates data for an existing user', () => {
-        // First mock for getUserByCode inside updateUserData
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({
-                id: '12',
-                name: 'Sync User',
-                code: 'SYNCCODE',
-                expiryDate: null,
-                createdAt: new Date().toISOString(),
-                data: '{}',
-            })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
-        // Second mock for the UPDATE statement
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => null),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 1 })),
-        }));
+    it('updateUserData updates data for an existing user', async () => {
+        // First call: getUserByCode inside updateUserData
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+            id: '12',
+            name: 'Sync User',
+            code: 'SYNCCODE',
+            expiryDate: null,
+            createdAt: new Date().toISOString(),
+            data: '{}',
+        });
+        // Second call: the update itself
+        mockPrisma.user.update.mockResolvedValueOnce({
+            id: '12',
+            name: 'Sync User',
+            code: 'SYNCCODE',
+            expiryDate: null,
+            createdAt: new Date().toISOString(),
+            data: JSON.stringify({ messages: ['new message'] }),
+        });
 
-        const success = updateUserData('SYNCCODE', { messages: ['new message'] });
+        const success = await updateUserData('SYNCCODE', { messages: ['new message'] });
         expect(success).toBe(true);
     });
 });
@@ -380,37 +366,36 @@ describe('Sync operations', () => {
 describe('Settings', () => {
     beforeEach(() => {
         mockSettings.clear();
+        vi.restoreAllMocks();
     });
 
-    it('getSetting returns default value when key does not exist', () => {
-        const value = getSetting('nonexistent', 42);
+    it('getSetting returns default value when key does not exist', async () => {
+        const value = await getSetting('nonexistent', 42);
         expect(value).toBe(42);
     });
 
-    it('getSetting returns null by default when key does not exist', () => {
-        const value = getSetting('nonexistent');
+    it('getSetting returns null by default when key does not exist', async () => {
+        const value = await getSetting('nonexistent');
         expect(value).toBeNull();
     });
 
-    it('getSetting retrieves a stored setting', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => ({ value: JSON.stringify(12345) })),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 0 })),
-        }));
+    it('getSetting retrieves a stored setting', async () => {
+        mockPrisma.setting.findUnique.mockResolvedValueOnce({
+            key: 'min_auth_ts',
+            value: JSON.stringify(12345),
+        });
 
-        const value = getSetting('min_auth_ts', 0);
+        const value = await getSetting('min_auth_ts', 0);
         expect(value).toBe(12345);
     });
 
-    it('updateSetting stores a value and returns true', () => {
-        mockPrepare.mockImplementationOnce(() => ({
-            get: vi.fn(() => null),
-            all: vi.fn(() => []),
-            run: vi.fn(() => ({ changes: 1 })),
-        }));
+    it('updateSetting stores a value and returns true', async () => {
+        mockPrisma.setting.upsert.mockResolvedValueOnce({
+            key: 'min_auth_ts',
+            value: JSON.stringify(Date.now()),
+        });
 
-        const result = updateSetting('min_auth_ts', Date.now());
+        const result = await updateSetting('min_auth_ts', Date.now());
         expect(result).toBe(true);
     });
 });
