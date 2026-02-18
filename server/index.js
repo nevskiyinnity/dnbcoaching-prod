@@ -126,16 +126,16 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // Admin Users CRUD
-app.get('/api/admin/users', checkAdminAuth, (req, res) => {
+app.get('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
-        const users = getAllUsers();
+        const users = await getAllUsers();
         res.json({ users });
     } catch (e) {
         res.status(500).json({ message: e.message });
     }
 });
 
-app.post('/api/admin/users', checkAdminAuth, (req, res) => {
+app.post('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
         const { name, expiryDate } = req.body;
         if (!name || !name.trim()) return res.status(400).json({ message: 'Name is required' });
@@ -149,19 +149,19 @@ app.post('/api/admin/users', checkAdminAuth, (req, res) => {
             createdAt: new Date().toISOString(),
         };
 
-        addUser(newUser);
+        await addUser(newUser);
         res.status(201).json({ user: newUser });
     } catch (e) {
         res.status(500).json({ message: e.message });
     }
 });
 
-app.put('/api/admin/users', checkAdminAuth, (req, res) => {
+app.put('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
         const { id, name, expiryDate } = req.body;
         if (!id) return res.status(400).json({ message: 'User ID is required' });
 
-        const success = updateUser(id, { name: name?.trim(), expiryDate });
+        const success = await updateUser(id, { name: name?.trim(), expiryDate });
         if (!success) return res.status(404).json({ message: 'User not found' });
         res.json({ success: true });
     } catch (e) {
@@ -169,12 +169,12 @@ app.put('/api/admin/users', checkAdminAuth, (req, res) => {
     }
 });
 
-app.delete('/api/admin/users', checkAdminAuth, (req, res) => {
+app.delete('/api/admin/users', checkAdminAuth, async (req, res) => {
     try {
         const { id } = req.body;
         if (!id) return res.status(400).json({ message: 'User ID is required' });
 
-        const success = deleteUser(id);
+        const success = await deleteUser(id);
         if (!success) return res.status(404).json({ message: 'User not found' });
         res.json({ success: true });
     } catch (e) {
@@ -182,9 +182,9 @@ app.delete('/api/admin/users', checkAdminAuth, (req, res) => {
     }
 });
 
-app.post('/api/admin/users/reset', checkAdminAuth, (req, res) => {
+app.post('/api/admin/users/reset', checkAdminAuth, async (req, res) => {
     try {
-        updateSetting('min_auth_ts', Date.now());
+        await updateSetting('min_auth_ts', Date.now());
         res.json({ success: true, message: 'All sessions invalidated (timestamp update)' });
     } catch (e) {
         res.status(500).json({ message: e.message });
@@ -248,32 +248,32 @@ import { SYSTEM_PROMPT } from '../config/constants.js';
 // --- Sync API ---
 import { getUserData, updateUserData } from './db.js';
 
-app.get('/api/sync', (req, res) => {
+app.get('/api/sync', async (req, res) => {
     const code = req.query.code;
     if (!code) return res.status(400).json({ message: 'Code required' });
 
     // Simple validation (same as chat)
-    const validation = isCodeValid(code);
+    const validation = await isCodeValid(code);
     if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
-    const data = getUserData(code);
+    const data = await getUserData(code);
     // Inject system settings
     if (data) {
         data.__sys = {
-            minAuth: getSetting('min_auth_ts', 0)
+            minAuth: await getSetting('min_auth_ts', 0)
         };
     }
     res.json(data || {});
 });
 
-app.post('/api/sync', (req, res) => {
+app.post('/api/sync', async (req, res) => {
     const { code, data } = req.body;
     if (!code || !data) return res.status(400).json({ message: 'Code and data required' });
 
-    const validation = isCodeValid(code);
+    const validation = await isCodeValid(code);
     if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
-    const success = updateUserData(code, data);
+    const success = await updateUserData(code, data);
     if (success) {
         res.json({ success: true });
     } else {
@@ -299,13 +299,13 @@ app.post('/api/chat', async (req, res) => {
         // Validation
         const codestr = (code || '').trim();
         if (validateOnly) {
-            const v = isCodeValid(codestr);
+            const v = await isCodeValid(codestr);
             if (!v.valid) return res.status(401).json({ valid: false, message: v.reason || 'Invalid code' });
             return res.status(200).json({ valid: true, userName: v.user?.name });
         }
 
         if (!codestr) return res.status(401).json({ message: 'Access code required' });
-        const validation = isCodeValid(codestr);
+        const validation = await isCodeValid(codestr);
         if (!validation.valid) return res.status(401).json({ message: validation.reason });
 
         if (checkChatRateLimit(codestr)) {
