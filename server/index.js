@@ -384,21 +384,40 @@ app.post('/api/chat', async (req, res) => {
             return res.status(429).json({ error: 'Too many requests. Please try again later.' });
         }
 
-        // Format Messages
-        const userMessages = Array.isArray(rawMessages)
-            ? rawMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => ({ role: m.role, content: m.content }))
-            : [];
-
+        // Validate and format messages
+        const VALID_ROLES = new Set(['user', 'assistant', 'system']);
         const MAX_MESSAGE_LENGTH = 4000;
         const MAX_MESSAGES = 50;
 
-        if (userMessages.length > MAX_MESSAGES) {
-            return res.status(400).json({ error: `Too many messages. Maximum ${MAX_MESSAGES} allowed.` });
+        if (rawMessages !== undefined && !Array.isArray(rawMessages)) {
+            return res.status(400).json({ error: 'messages must be an array' });
         }
-        for (const msg of userMessages) {
-            if (typeof msg.content === 'string' && msg.content.length > MAX_MESSAGE_LENGTH) {
+
+        const messagesArr = Array.isArray(rawMessages) ? rawMessages : [];
+
+        // Validate structure of each message before filtering
+        for (const msg of messagesArr) {
+            if (!msg || typeof msg !== 'object') {
+                return res.status(400).json({ error: 'Each message must be an object with role and content' });
+            }
+            if (typeof msg.role !== 'string' || !VALID_ROLES.has(msg.role)) {
+                return res.status(400).json({ error: `Invalid message role: "${msg.role}". Must be one of: user, assistant, system` });
+            }
+            if (typeof msg.content !== 'string') {
+                return res.status(400).json({ error: 'Message content must be a string' });
+            }
+            if (msg.content.length > MAX_MESSAGE_LENGTH) {
                 return res.status(400).json({ error: `Message too long. Maximum ${MAX_MESSAGE_LENGTH} characters.` });
             }
+        }
+
+        // Keep only user and assistant messages for the OpenAI call
+        const userMessages = messagesArr
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({ role: m.role, content: m.content }));
+
+        if (userMessages.length > MAX_MESSAGES) {
+            return res.status(400).json({ error: `Too many messages. Maximum ${MAX_MESSAGES} allowed.` });
         }
 
         // Handle image if present (attach to the last user message or add as new)

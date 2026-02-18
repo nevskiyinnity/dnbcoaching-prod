@@ -246,33 +246,22 @@ describe('Chat API validation logic', () => {
 
     it('message filtering logic only keeps user and assistant roles', () => {
         // Replicating the message filtering logic from server/index.js
+        // After structure validation, only valid roles pass through
         const rawMessages = [
             { role: 'user', content: 'Hello' },
             { role: 'assistant', content: 'Hi there' },
-            { role: 'system', content: 'Should be filtered' },
-            { role: 'function', content: 'Should be filtered' },
-            null,
-            undefined,
+            { role: 'system', content: 'Should be filtered from OpenAI call' },
             { role: 'user', content: 'Follow up' },
         ];
 
-        const filtered = Array.isArray(rawMessages)
-            ? rawMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => ({ role: m.role, content: m.content }))
-            : [];
+        const filtered = rawMessages
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({ role: m.role, content: m.content }));
 
         expect(filtered).toHaveLength(3);
         expect(filtered[0]).toEqual({ role: 'user', content: 'Hello' });
         expect(filtered[1]).toEqual({ role: 'assistant', content: 'Hi there' });
         expect(filtered[2]).toEqual({ role: 'user', content: 'Follow up' });
-    });
-
-    it('handles non-array messages gracefully', () => {
-        const rawMessages = 'not an array';
-        const filtered = Array.isArray(rawMessages)
-            ? rawMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant'))
-            : [];
-
-        expect(filtered).toEqual([]);
     });
 });
 
@@ -731,22 +720,39 @@ describe('checkChatRateLimit (rate limiting)', () => {
 // Message Validation: MAX_MESSAGE_LENGTH and MAX_MESSAGES (from server/index.js)
 // ---------------------------------------------------------------------------
 describe('Message validation (length and count limits)', () => {
+    const VALID_ROLES = new Set(['user', 'assistant', 'system']);
     const MAX_MESSAGE_LENGTH = 4000;
     const MAX_MESSAGES = 50;
 
     // Replicating the validation logic from the /api/chat endpoint
     function validateMessages(rawMessages) {
-        const userMessages = Array.isArray(rawMessages)
-            ? rawMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => ({ role: m.role, content: m.content }))
-            : [];
+        if (rawMessages !== undefined && !Array.isArray(rawMessages)) {
+            return { valid: false, error: 'messages must be an array' };
+        }
+        const messagesArr = Array.isArray(rawMessages) ? rawMessages : [];
+
+        // Validate structure of each message
+        for (const msg of messagesArr) {
+            if (!msg || typeof msg !== 'object') {
+                return { valid: false, error: 'Each message must be an object with role and content' };
+            }
+            if (typeof msg.role !== 'string' || !VALID_ROLES.has(msg.role)) {
+                return { valid: false, error: `Invalid message role: "${msg.role}". Must be one of: user, assistant, system` };
+            }
+            if (typeof msg.content !== 'string') {
+                return { valid: false, error: 'Message content must be a string' };
+            }
+            if (msg.content.length > MAX_MESSAGE_LENGTH) {
+                return { valid: false, error: `Message too long. Maximum ${MAX_MESSAGE_LENGTH} characters.` };
+            }
+        }
+
+        const userMessages = messagesArr
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({ role: m.role, content: m.content }));
 
         if (userMessages.length > MAX_MESSAGES) {
             return { valid: false, error: `Too many messages. Maximum ${MAX_MESSAGES} allowed.` };
-        }
-        for (const msg of userMessages) {
-            if (typeof msg.content === 'string' && msg.content.length > MAX_MESSAGE_LENGTH) {
-                return { valid: false, error: `Message too long. Maximum ${MAX_MESSAGE_LENGTH} characters.` };
-            }
         }
         return { valid: true, messages: userMessages };
     }
@@ -804,19 +810,28 @@ describe('Message validation (length and count limits)', () => {
         expect(result.valid).toBe(true);
     });
 
-    it('filters out system/function roles before counting', () => {
+    it('filters out system roles before counting user/assistant messages', () => {
         const messages = Array.from({ length: 50 }, (_, i) => ({
             role: i % 2 === 0 ? 'user' : 'assistant',
             content: `Message ${i}`,
         }));
-        // Add system messages that should be filtered out
+        // Add system messages that should be filtered out of the count
         messages.push({ role: 'system', content: 'System message' });
-        messages.push({ role: 'function', content: 'Function result' });
 
         const result = validateMessages(messages);
-        // Only 50 user/assistant messages counted, system/function are filtered
+        // Only 50 user/assistant messages counted, system is filtered
         expect(result.valid).toBe(true);
         expect(result.messages).toHaveLength(50);
+    });
+
+    it('rejects messages with invalid roles like function', () => {
+        const messages = [
+            { role: 'user', content: 'Hello' },
+            { role: 'function', content: 'Invalid role' },
+        ];
+        const result = validateMessages(messages);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('Invalid message role');
     });
 
     it('handles empty array gracefully', () => {
@@ -825,10 +840,28 @@ describe('Message validation (length and count limits)', () => {
         expect(result.messages).toHaveLength(0);
     });
 
-    it('handles non-array input gracefully', () => {
+    it('rejects non-array input (null)', () => {
         const result = validateMessages(null);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('must be an array');
+    });
+
+    it('handles undefined input gracefully (no messages field)', () => {
+        const result = validateMessages(undefined);
         expect(result.valid).toBe(true);
         expect(result.messages).toHaveLength(0);
+    });
+
+    it('rejects message with non-string content', () => {
+        const result = validateMessages([{ role: 'user', content: 12345 }]);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('content must be a string');
+    });
+
+    it('rejects null message objects in array', () => {
+        const result = validateMessages([null, { role: 'user', content: 'Hello' }]);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('must be an object');
     });
 });
 
