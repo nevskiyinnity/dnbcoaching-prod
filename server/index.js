@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -66,7 +67,7 @@ app.post('/api/admin/users', checkAdminAuth, (req, res) => {
 
         const code = generateCode();
         const newUser = {
-            id: Math.random().toString(36).slice(2) + Date.now().toString(36),
+            id: crypto.randomUUID(),
             name: name.trim(),
             code,
             expiryDate: expiryDate || null,
