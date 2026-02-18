@@ -394,11 +394,16 @@ app.post('/api/chat', async (req, res) => {
 });
 
 
-// Catch-all for SPA handling
-app.use((req, res) => {
-    res.sendFile(path.join(__dirname, '../dist/index.html'));
-});
+// Catch-all for SPA handling (only in non-serverless mode)
+if (!process.env.VERCEL) {
+    app.use((req, res) => {
+        res.sendFile(path.join(__dirname, '../dist/index.html'));
+    });
 
-app.listen(PORT, () => {
-    logger.info(`Server running on port ${PORT}`);
-});
+    app.listen(PORT, () => {
+        logger.info(`Server running on port ${PORT}`);
+    });
+}
+
+// Export for Vercel serverless functions
+export default app;
