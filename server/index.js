@@ -9,9 +9,10 @@ import { Resend } from 'resend';
 
 // Initialize Sentry before anything else
 Sentry.init({
-  dsn: process.env.SENTRY_DSN || "",
+  dsn: process.env.SENTRY_DSN || "https://727264aa963af7acda22d6b709c49e78@o4510908954836992.ingest.de.sentry.io/4510908981051472",
   tracesSampleRate: 0.1,
-  enabled: !!process.env.SENTRY_DSN,
+  enableLogs: true,
+  enabled: true,
 });
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
