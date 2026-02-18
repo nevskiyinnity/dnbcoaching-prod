@@ -2,14 +2,14 @@ import { useState, useEffect } from 'react';
 import { toast } from "sonner";
 
 export function useBotAuth() {
-    const [userCode, setUserCode] = useState<string>(localStorage.getItem("bot_user_code") || "");
-    const [dbName, setDbName] = useState<string>(localStorage.getItem("bot_user_name") || "");
-    const [authenticated, setAuthenticated] = useState<boolean>(!!localStorage.getItem("bot_user_code"));
-    const [inputName, setInputName] = useState<string>(localStorage.getItem("bot_name") || "");
-    const [lang, setLang] = useState<'nl' | 'en'>((localStorage.getItem("bot_lang") as 'nl' | 'en') || 'nl');
+    const [userCode, setUserCode] = useState<string>(sessionStorage.getItem("bot_user_code") || "");
+    const [dbName, setDbName] = useState<string>(sessionStorage.getItem("bot_user_name") || "");
+    const [authenticated, setAuthenticated] = useState<boolean>(!!sessionStorage.getItem("bot_user_code"));
+    const [inputName, setInputName] = useState<string>(sessionStorage.getItem("bot_name") || "");
+    const [lang, setLang] = useState<'nl' | 'en'>((sessionStorage.getItem("bot_lang") as 'nl' | 'en') || 'nl');
 
-    useEffect(() => { if (inputName) localStorage.setItem("bot_name", inputName); }, [inputName]);
-    useEffect(() => { if (lang) localStorage.setItem("bot_lang", lang); }, [lang]);
+    useEffect(() => { if (inputName) sessionStorage.setItem("bot_name", inputName); }, [inputName]);
+    useEffect(() => { if (lang) sessionStorage.setItem("bot_lang", lang); }, [lang]);
 
     // Priority name: Manual Input > DB Name
     const effectiveName = inputName.trim() || dbName;
@@ -34,9 +34,9 @@ export function useBotAuth() {
 
             const returnedName = data.userName || "";
 
-            localStorage.setItem("bot_user_code", code.trim());
-            localStorage.setItem("bot_user_name", returnedName);
-            localStorage.setItem("bot_login_ts", Date.now().toString());
+            sessionStorage.setItem("bot_user_code", code.trim());
+            sessionStorage.setItem("bot_user_name", returnedName);
+            sessionStorage.setItem("bot_login_ts", Date.now().toString());
 
             setUserCode(code.trim());
             setDbName(returnedName);
@@ -49,14 +49,14 @@ export function useBotAuth() {
     }
 
     function logout() {
-        localStorage.removeItem("bot_user_code");
-        localStorage.removeItem("bot_user_name");
-        localStorage.removeItem("bot_name");
-        localStorage.removeItem("bot_lang");
-        localStorage.removeItem("bot_gamification");
-        localStorage.removeItem("bot_history_v2");
-        localStorage.removeItem("bot_pins");
-        localStorage.removeItem("bot_login_ts");
+        sessionStorage.removeItem("bot_user_code");
+        sessionStorage.removeItem("bot_user_name");
+        sessionStorage.removeItem("bot_name");
+        sessionStorage.removeItem("bot_lang");
+        sessionStorage.removeItem("bot_gamification");
+        sessionStorage.removeItem("bot_history_v2");
+        sessionStorage.removeItem("bot_pins");
+        sessionStorage.removeItem("bot_login_ts");
 
         setUserCode("");
         setDbName("");
