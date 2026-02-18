@@ -27,10 +27,28 @@ function isValidImageUrl(url) {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) {
     logger.warn('OPENAI_API_KEY not set — AI features will be unavailable');
+}
+
+// --- Admin Password Hash (compute once at module load) ---
+let _adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || null;
+let _adminPasswordHashPromise = null;
+
+function getAdminPasswordHash() {
+    if (_adminPasswordHash) return Promise.resolve(_adminPasswordHash);
+    if (!process.env.ADMIN_PASSWORD) {
+        throw new Error('Either ADMIN_PASSWORD_HASH or ADMIN_PASSWORD environment variable is required');
+    }
+    // Lazy initialization: hash once and cache the result
+    if (!_adminPasswordHashPromise) {
+        _adminPasswordHashPromise = hashPassword(process.env.ADMIN_PASSWORD).then(hash => {
+            _adminPasswordHash = hash;
+            return hash;
+        });
+    }
+    return _adminPasswordHashPromise;
 }
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const RESEND_API_KEY = process.env.VITE_RESEND_API_KEY;
@@ -110,8 +128,7 @@ app.post('/api/admin/login', async (req, res) => {
     }
 
     try {
-        // If no hash is configured, hash-compare against the plaintext env var as fallback
-        const storedHash = ADMIN_PASSWORD_HASH || await hashPassword(process.env.ADMIN_PASSWORD || '');
+        const storedHash = await getAdminPasswordHash();
         const valid = await verifyPassword(password, storedHash);
 
         if (!valid) {
@@ -120,7 +137,8 @@ app.post('/api/admin/login', async (req, res) => {
 
         const token = signToken({ role: 'admin' });
         return res.status(200).json({ success: true, token });
-    } catch {
+    } catch (err) {
+        logger.error('Admin login error', err);
         return res.status(500).json({ success: false, message: 'Authentication error' });
     }
 });
